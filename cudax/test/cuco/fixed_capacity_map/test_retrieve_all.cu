@@ -138,10 +138,11 @@ C2H_TEST(
     ::cuda::counting_iterator<int>{num_unique_keys},
     matches_iota_pair<key_type, mapped_type>{keys.data(), values.data()}));
 
+  auto map_ref                = map.ref();
   auto discarded_keys         = ::cuda::make_buffer<key_type>(stream, mr, num_unique_keys, key_type{0});
   const auto discarded_values = ::thrust::make_discard_iterator();
   const auto [discarded_keys_end, discarded_values_end] =
-    map.retrieve_all(stream, discarded_keys.begin(), discarded_values);
+    map_ref.retrieve_all(stream, mr, discarded_keys.begin(), discarded_values);
   REQUIRE(discarded_keys_end == discarded_keys.begin() + num_unique_keys);
   REQUIRE(discarded_values_end == discarded_values + num_unique_keys);
 
@@ -152,8 +153,8 @@ C2H_TEST(
     ::cuda::counting_iterator<int>{num_unique_keys},
     matches_iota_key<key_type>{discarded_keys.data()}));
 
-  map.clear(stream);
-  const auto [cleared_keys_end, cleared_values_end] = map.retrieve_all(stream, keys.begin(), values.begin());
+  map_ref.clear(stream);
+  const auto [cleared_keys_end, cleared_values_end] = map_ref.retrieve_all(stream, mr, keys.begin(), values.begin());
   REQUIRE(cleared_keys_end == keys.begin());
   REQUIRE(cleared_values_end == values.begin());
 }

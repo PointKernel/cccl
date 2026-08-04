@@ -23,12 +23,16 @@
 
 #include <cuda/__atomic/atomic.h>
 #include <cuda/__cmath/pow2.h>
+#include <cuda/__iterator/zip_iterator.h>
 #include <cuda/__type_traits/is_bitwise_comparable.h>
 #include <cuda/std/__mdspan/extents.h>
 #include <cuda/std/__utility/pair.h>
 #include <cuda/std/span>
 
 #include <cuda/experimental/__cuco/capacity.cuh>
+#if !_CCCL_COMPILER(NVRTC)
+#  include <cuda/experimental/__cuco/detail/open_addressing/open_addressing_host_impl.cuh>
+#endif // !_CCCL_COMPILER(NVRTC)
 #include <cuda/experimental/__cuco/detail/open_addressing/open_addressing_ref_impl.cuh>
 #include <cuda/experimental/__cuco/detail/open_addressing/slot_storage_ref.cuh>
 #include <cuda/experimental/__cuco/probing_scheme.cuh>
@@ -136,6 +140,10 @@ private:
 
   __impl_type __impl;
 
+#if !_CCCL_COMPILER(NVRTC)
+  friend class __open_addressing::__open_addressing_host_impl<fixed_capacity_map_ref>;
+#endif // !_CCCL_COMPILER(NVRTC)
+
 public:
   //! @brief Constructs a ref without erasure support.
   //!
@@ -177,6 +185,155 @@ public:
                __probing_scheme,
                __storage_ref_type{__slots.data(), __checked_capacity(__slots)}}
   {}
+
+#if !_CCCL_COMPILER(NVRTC)
+  // ===== Host bulk operations =====
+
+  //! @brief Erases all elements from the container.
+  //!
+  //! @param __stream CUDA stream this operation is executed in
+  _CCCL_HOST_API void clear(::cuda::stream_ref __stream)
+  {
+    __open_addressing::__open_addressing_host_impl<fixed_capacity_map_ref>::clear(__stream, *this);
+  }
+
+  //! @brief Asynchronously erases all elements from the container.
+  //!
+  //! @param __stream CUDA stream this operation is executed in
+  _CCCL_HOST_API void clear_async(::cuda::stream_ref __stream) noexcept
+  {
+    __open_addressing::__open_addressing_host_impl<fixed_capacity_map_ref>::clear_async(__stream, *this);
+  }
+
+  //! @brief Inserts all key-value pairs in `[__first, __last)`.
+  //!
+  //! @note This function synchronizes the given stream.
+  //!
+  //! @tparam _MemoryResource Memory resource used for temporary device storage
+  //! @tparam _InputIt Device-accessible random access input iterator
+  //! @param __stream CUDA stream used for insert
+  //! @param __memory_resource Memory resource used for temporary device storage
+  //! @param __first Beginning of the input sequence
+  //! @param __last End of the input sequence
+  //! @return Number of successful insertions
+  template <class _MemoryResource, class _InputIt>
+  [[nodiscard]] _CCCL_HOST_API size_type
+  insert(::cuda::stream_ref __stream, _MemoryResource __memory_resource, _InputIt __first, _InputIt __last)
+  {
+    return __open_addressing::__open_addressing_host_impl<fixed_capacity_map_ref>::insert(
+      __stream, __memory_resource, __first, __last, *this);
+  }
+
+  //! @brief Asynchronously inserts all key-value pairs in `[__first, __last)`.
+  //!
+  //! @tparam _InputIt Device-accessible random access input iterator
+  //! @param __stream CUDA stream used for insert
+  //! @param __first Beginning of the input sequence
+  //! @param __last End of the input sequence
+  template <class _InputIt>
+  _CCCL_HOST_API void insert_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last) noexcept
+  {
+    __open_addressing::__open_addressing_host_impl<fixed_capacity_map_ref>::insert_async(
+      __stream, __first, __last, *this);
+  }
+
+  //! @brief Indicates whether each key in `[__first, __last)` is contained in the map.
+  //!
+  //! @note This function synchronizes the given stream.
+  template <class _InputIt, class _OutputIt>
+  _CCCL_HOST_API void
+  contains(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const
+  {
+    contains_async(__stream, __first, __last, __output_begin);
+    __stream.sync();
+  }
+
+  //! @brief Asynchronously indicates whether each key in `[__first, __last)` is contained in the map.
+  template <class _InputIt, class _OutputIt>
+  _CCCL_HOST_API void contains_async(
+    ::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const noexcept
+  {
+    __open_addressing::__open_addressing_host_impl<fixed_capacity_map_ref>::contains_async(
+      __stream, __first, __last, __output_begin, *this);
+  }
+
+  //! @brief Finds the mapped value for every key in `[__first, __last)`.
+  //!
+  //! @note This function synchronizes the given stream.
+  template <class _InputIt, class _OutputIt>
+  _CCCL_HOST_API void
+  find(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const
+  {
+    find_async(__stream, __first, __last, __output_begin);
+    __stream.sync();
+  }
+
+  //! @brief Asynchronously finds the mapped value for every key in `[__first, __last)`.
+  template <class _InputIt, class _OutputIt>
+  _CCCL_HOST_API void
+  find_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const noexcept
+  {
+    __open_addressing::__open_addressing_host_impl<fixed_capacity_map_ref>::find_async(
+      __stream, __first, __last, __output_begin, *this);
+  }
+
+  //! @brief Finds mapped values for keys selected by a stencil predicate.
+  //!
+  //! @note This function synchronizes the given stream.
+  template <class _InputIt, class _StencilIt, class _Predicate, class _OutputIt>
+  _CCCL_HOST_API void find_if(
+    ::cuda::stream_ref __stream,
+    _InputIt __first,
+    _InputIt __last,
+    _StencilIt __stencil,
+    _Predicate __pred,
+    _OutputIt __output_begin) const
+  {
+    find_if_async(__stream, __first, __last, __stencil, __pred, __output_begin);
+    __stream.sync();
+  }
+
+  //! @brief Asynchronously finds mapped values for keys selected by a stencil predicate.
+  template <class _InputIt, class _StencilIt, class _Predicate, class _OutputIt>
+  _CCCL_HOST_API void find_if_async(
+    ::cuda::stream_ref __stream,
+    _InputIt __first,
+    _InputIt __last,
+    _StencilIt __stencil,
+    _Predicate __pred,
+    _OutputIt __output_begin) const noexcept
+  {
+    __open_addressing::__open_addressing_host_impl<fixed_capacity_map_ref>::find_if_async(
+      __stream, __first, __last, __stencil, __pred, __output_begin, *this);
+  }
+
+  //! @brief Retrieves all keys and mapped values.
+  //!
+  //! @note This function synchronizes the given stream.
+  //! @note The output order is implementation-defined.
+  //!
+  //! @tparam _MemoryResource Memory resource used for temporary device storage
+  //! @tparam _KeyOutputIt Device-accessible random access key output iterator
+  //! @tparam _ValueOutputIt Device-accessible random access mapped-value output iterator
+  //! @param __stream CUDA stream used for this operation
+  //! @param __memory_resource Memory resource used for temporary device storage
+  //! @param __keys_out Beginning of the key output range
+  //! @param __values_out Beginning of the mapped-value output range
+  //! @return Pair of iterators indicating the ends of the output ranges
+  template <class _MemoryResource, class _KeyOutputIt, class _ValueOutputIt>
+  [[nodiscard]] _CCCL_HOST_API ::cuda::std::pair<_KeyOutputIt, _ValueOutputIt> retrieve_all(
+    ::cuda::stream_ref __stream,
+    _MemoryResource __memory_resource,
+    _KeyOutputIt __keys_out,
+    _ValueOutputIt __values_out) const
+  {
+    const auto __zipped_out_begin = ::cuda::make_zip_iterator(__keys_out, __values_out);
+    const auto __zipped_out_end = __open_addressing::__open_addressing_host_impl<fixed_capacity_map_ref>::retrieve_all(
+      __stream, __memory_resource, __zipped_out_begin, *this);
+    const auto __num_out = __zipped_out_end - __zipped_out_begin;
+    return {__keys_out + __num_out, __values_out + __num_out};
+  }
+#endif // !_CCCL_COMPILER(NVRTC)
 
   // ===== Accessors =====
 
@@ -250,6 +407,14 @@ public:
   [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr iterator end() noexcept
   {
     return __impl.end();
+  }
+
+  //! @brief Returns a pointer to the slot storage backing this ref.
+  //!
+  //! @return Pointer to the first slot
+  [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr value_type* data() const noexcept
+  {
+    return __impl.storage_ref().data();
   }
 
   //! @brief Returns a span over the slot storage backing this ref.

@@ -125,6 +125,22 @@ C2H_TEST("fixed_capacity_map insert and contains", "[container]", key_types, cg_
     stream, cuda::counting_iterator<key_type>{0}, cuda::counting_iterator<key_type>{num_keys}, cleared.begin());
   REQUIRE(
     ::thrust::none_of(::thrust::cuda::par.on(stream.get()), cleared.data(), cleared.data() + num_keys, is_nonzero{}));
+
+  auto map_ref = map.ref();
+  REQUIRE(map_ref.insert(stream, mr, __pairs, __pairs + num_keys) == num_keys);
+  map_ref.contains(
+    stream, cuda::counting_iterator<key_type>{0}, cuda::counting_iterator<key_type>{2 * num_keys}, found.begin());
+  REQUIRE(::thrust::all_of(
+    ::thrust::cuda::par.on(stream.get()),
+    cuda::counting_iterator<int>{0},
+    cuda::counting_iterator<int>{2 * num_keys},
+    match_expected{found.data(), num_keys}));
+
+  map_ref.clear(stream);
+  map_ref.contains(
+    stream, cuda::counting_iterator<key_type>{0}, cuda::counting_iterator<key_type>{num_keys}, cleared.begin());
+  REQUIRE(
+    ::thrust::none_of(::thrust::cuda::par.on(stream.get()), cleared.data(), cleared.data() + num_keys, is_nonzero{}));
 }
 
 template <class _Key, class _Tp>
@@ -139,6 +155,13 @@ using __map_of = cudax::cuco::fixed_capacity_map<
 
 C2H_TEST("fixed_capacity_map key and slot size constraint", "[container]")
 {
+  using map_type = __map_of<::cuda::std::uint32_t, ::cuda::std::uint32_t>;
+  static_assert(!::cuda::std::is_copy_constructible_v<map_type>);
+  static_assert(!::cuda::std::is_copy_assignable_v<map_type>);
+  static_assert(!::cuda::std::is_move_constructible_v<map_type>);
+  static_assert(!::cuda::std::is_move_assignable_v<map_type>);
+  static_assert(::cuda::std::is_trivially_copyable_v<typename map_type::ref_type>);
+
   static_assert(sizeof(typename __map_of<::cuda::std::uint8_t, ::cuda::std::uint8_t>::value_type) == 2,
                 "<uint8_t, uint8_t> is a valid 2-byte slot");
   static_assert(sizeof(typename __map_of<::cuda::std::uint16_t, ::cuda::std::uint16_t>::value_type) == 4,

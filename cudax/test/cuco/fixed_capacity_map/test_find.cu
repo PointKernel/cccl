@@ -145,14 +145,17 @@ C2H_TEST("fixed_capacity_map find", "[container]", key_types, cg_sizes, bucket_s
     cuda::counting_iterator<int>{2 * num_keys},
     match_found<key_type>{found.data(), num_keys, sentinel}));
 
+  auto map_ref = map.ref();
+
   // find_if only queries even keys; odd positions resolve to the empty value sentinel
   auto found_if = ::cuda::make_buffer<key_type>(stream, mr, num_keys, key_type{0});
-  map.find_if(stream,
-              cuda::counting_iterator<key_type>{0},
-              cuda::counting_iterator<key_type>{num_keys},
-              cuda::counting_iterator<int>{0},
-              is_even{},
-              found_if.begin());
+  map_ref.find_if(
+    stream,
+    cuda::counting_iterator<key_type>{0},
+    cuda::counting_iterator<key_type>{num_keys},
+    cuda::counting_iterator<int>{0},
+    is_even{},
+    found_if.begin());
 
   REQUIRE(::thrust::all_of(
     ::thrust::cuda::par.on(stream.get()),
@@ -161,9 +164,10 @@ C2H_TEST("fixed_capacity_map find", "[container]", key_types, cg_sizes, bucket_s
     match_find_if<key_type>{found_if.data(), sentinel}));
 
   // After clear the map is empty, so every key resolves to the empty value sentinel
-  map.clear(stream);
+  map_ref.clear(stream);
   auto cleared = ::cuda::make_buffer<key_type>(stream, mr, num_keys, key_type{0});
-  map.find(stream, cuda::counting_iterator<key_type>{0}, cuda::counting_iterator<key_type>{num_keys}, cleared.begin());
+  map_ref.find(
+    stream, cuda::counting_iterator<key_type>{0}, cuda::counting_iterator<key_type>{num_keys}, cleared.begin());
   REQUIRE(::thrust::none_of(
     ::thrust::cuda::par.on(stream.get()),
     cleared.data(),

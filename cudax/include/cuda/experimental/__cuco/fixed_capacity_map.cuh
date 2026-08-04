@@ -21,21 +21,22 @@
 #  pragma system_header
 #endif // no system header
 
-#include <cuda/__iterator/zip_iterator.h>
+#include <cuda/__container/buffer.h>
 #include <cuda/__memory_pool/device_memory_pool.h>
 #include <cuda/std/__concepts/concept_macros.h>
 #include <cuda/std/__cstddef/types.h>
+#include <cuda/std/__exception/exception_macros.h>
 #include <cuda/std/__fwd/extents.h>
-#include <cuda/std/__memory/unique_ptr.h>
 #include <cuda/std/__utility/pair.h>
 
 #include <cuda/experimental/__cuco/capacity.cuh>
 #include <cuda/experimental/__cuco/detail/bitwise_compare.cuh>
-#include <cuda/experimental/__cuco/detail/open_addressing/open_addressing_impl.cuh>
 #include <cuda/experimental/__cuco/fixed_capacity_map_ref.cuh>
 #include <cuda/experimental/__cuco/hash_functions.cuh>
 #include <cuda/experimental/__cuco/probing_scheme.cuh>
 #include <cuda/experimental/__cuco/types.cuh>
+
+#include <stdexcept>
 
 #include <cuda/std/__cccl/prologue.h>
 
@@ -101,16 +102,17 @@ public:
                                                                                                   ///< ref type
 
 private:
-  using __impl_type = __open_addressing::
-    __open_addressing_impl<_Key, value_type, _Scope, _KeyEqual, _ProbingScheme, _BucketSize, _MemoryResource>;
+  ::cuda::device_buffer<value_type> __slots;
+  ref_type __ref;
 
-  ::cuda::std::unique_ptr<__impl_type> __impl;
-  mapped_type __empty_value_sentinel;
-
-  //! @brief Synchronizes the CUDA stream.
-  static void __sync(::cuda::stream_ref __stream)
+  [[nodiscard]] static erased_key<_Key>
+  __validate_sentinels(empty_key<_Key> __empty_key_sentinel, erased_key<_Key> __erased_key_sentinel)
   {
-    __stream.sync();
+    if (detail::__bitwise_compare(key_type(__empty_key_sentinel), key_type(__erased_key_sentinel)))
+    {
+      _CCCL_THROW(::std::invalid_argument, "The empty key sentinel and erased key sentinel cannot be the same value.");
+    }
+    return __erased_key_sentinel;
   }
 
 public:
@@ -131,15 +133,15 @@ public:
     empty_value<_Tp> __empty_value_sentinel,
     const _KeyEqual& __pred                = {},
     const _ProbingScheme& __probing_scheme = {})
-      : __impl{::cuda::std::make_unique<__impl_type>(
-          __stream,
-          __mr,
-          _Capacity,
-          value_type{key_type(__empty_key_sentinel), mapped_type(__empty_value_sentinel)},
-          __pred,
-          __probing_scheme)}
-      , __empty_value_sentinel{mapped_type(__empty_value_sentinel)}
-  {}
+      : __slots{__stream, __mr, _Capacity, ::cuda::no_init}
+      , __ref{__empty_key_sentinel,
+              __empty_value_sentinel,
+              __pred,
+              __probing_scheme,
+              typename ref_type::storage_span_type{__slots.data(), __slots.size()}}
+  {
+    clear_async(__stream);
+  }
 
   //! @brief Constructs a map with dynamic capacity and no erasure.
   //!
@@ -160,15 +162,15 @@ public:
     empty_value<_Tp> __empty_value_sentinel,
     const _KeyEqual& __pred                = {},
     const _ProbingScheme& __probing_scheme = {})
-      : __impl{::cuda::std::make_unique<__impl_type>(
-          __stream,
-          __mr,
-          __capacity,
-          value_type{key_type(__empty_key_sentinel), mapped_type(__empty_value_sentinel)},
-          __pred,
-          __probing_scheme)}
-      , __empty_value_sentinel{mapped_type(__empty_value_sentinel)}
-  {}
+      : __slots{__stream, __mr, make_valid_capacity<_ProbingScheme, _BucketSize>(__capacity), ::cuda::no_init}
+      , __ref{__empty_key_sentinel,
+              __empty_value_sentinel,
+              __pred,
+              __probing_scheme,
+              typename ref_type::storage_span_type{__slots.data(), __slots.size()}}
+  {
+    clear_async(__stream);
+  }
 
   //! @brief Constructs a map sized by a target load factor (dynamic capacity only).
   //!
@@ -191,16 +193,18 @@ public:
     empty_value<_Tp> __empty_value_sentinel,
     const _KeyEqual& __pred                = {},
     const _ProbingScheme& __probing_scheme = {})
-      : __impl{::cuda::std::make_unique<__impl_type>(
-          __stream,
-          __mr,
-          __n,
-          __desired_load_factor,
-          value_type{key_type(__empty_key_sentinel), mapped_type(__empty_value_sentinel)},
-          __pred,
-          __probing_scheme)}
-      , __empty_value_sentinel{mapped_type(__empty_value_sentinel)}
-  {}
+      : __slots{__stream,
+                __mr,
+                make_valid_capacity<_ProbingScheme, _BucketSize>(__n, __desired_load_factor),
+                ::cuda::no_init}
+      , __ref{__empty_key_sentinel,
+              __empty_value_sentinel,
+              __pred,
+              __probing_scheme,
+              typename ref_type::storage_span_type{__slots.data(), __slots.size()}}
+  {
+    clear_async(__stream);
+  }
 
   //! @brief Constructs a map with static capacity and erasure support.
   //!
@@ -221,16 +225,16 @@ public:
     erased_key<_Key> __erased_key_sentinel,
     const _KeyEqual& __pred                = {},
     const _ProbingScheme& __probing_scheme = {})
-      : __impl{::cuda::std::make_unique<__impl_type>(
-          __stream,
-          __mr,
-          _Capacity,
-          value_type{key_type(__empty_key_sentinel), mapped_type(__empty_value_sentinel)},
-          key_type(__erased_key_sentinel),
-          __pred,
-          __probing_scheme)}
-      , __empty_value_sentinel{mapped_type(__empty_value_sentinel)}
-  {}
+      : __slots{__stream, __mr, _Capacity, ::cuda::no_init}
+      , __ref{__empty_key_sentinel,
+              __empty_value_sentinel,
+              __validate_sentinels(__empty_key_sentinel, __erased_key_sentinel),
+              __pred,
+              __probing_scheme,
+              typename ref_type::storage_span_type{__slots.data(), __slots.size()}}
+  {
+    clear_async(__stream);
+  }
 
   //! @brief Constructs a map with dynamic capacity and erasure support.
   //!
@@ -253,16 +257,21 @@ public:
     erased_key<_Key> __erased_key_sentinel,
     const _KeyEqual& __pred                = {},
     const _ProbingScheme& __probing_scheme = {})
-      : __impl{::cuda::std::make_unique<__impl_type>(
-          __stream,
-          __mr,
-          __capacity,
-          value_type{key_type(__empty_key_sentinel), mapped_type(__empty_value_sentinel)},
-          key_type(__erased_key_sentinel),
-          __pred,
-          __probing_scheme)}
-      , __empty_value_sentinel{mapped_type(__empty_value_sentinel)}
-  {}
+      : __slots{__stream, __mr, make_valid_capacity<_ProbingScheme, _BucketSize>(__capacity), ::cuda::no_init}
+      , __ref{__empty_key_sentinel,
+              __empty_value_sentinel,
+              __validate_sentinels(__empty_key_sentinel, __erased_key_sentinel),
+              __pred,
+              __probing_scheme,
+              typename ref_type::storage_span_type{__slots.data(), __slots.size()}}
+  {
+    clear_async(__stream);
+  }
+
+  fixed_capacity_map(const fixed_capacity_map&)            = delete;
+  fixed_capacity_map& operator=(const fixed_capacity_map&) = delete;
+  fixed_capacity_map(fixed_capacity_map&&)                 = delete;
+  fixed_capacity_map& operator=(fixed_capacity_map&&)      = delete;
 
   // ===== Clear =====
 
@@ -271,7 +280,7 @@ public:
   //! @param __stream CUDA stream this operation is executed in
   void clear(::cuda::stream_ref __stream)
   {
-    __impl->clear(__stream);
+    __ref.clear(__stream);
   }
 
   //! @brief Asynchronously erases all elements from the container. After this call, `size()`
@@ -280,7 +289,7 @@ public:
   //! @param __stream CUDA stream this operation is executed in
   void clear_async(::cuda::stream_ref __stream) noexcept
   {
-    __impl->clear_async(__stream);
+    __ref.clear_async(__stream);
   }
 
   // ===== Insert =====
@@ -302,7 +311,7 @@ public:
   template <class _InputIt>
   size_type insert(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last)
   {
-    return __impl->insert(__stream, __first, __last, ref());
+    return __ref.insert(__stream, __slots.memory_resource(), __first, __last);
   }
 
   //! @brief Asynchronously inserts all keys in the range `[__first, __last)`.
@@ -316,7 +325,7 @@ public:
   template <class _InputIt>
   void insert_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last) noexcept
   {
-    __impl->insert_async(__stream, __first, __last, ref());
+    __ref.insert_async(__stream, __first, __last);
   }
 
   // ===== Contains =====
@@ -336,8 +345,7 @@ public:
   template <class _InputIt, class _OutputIt>
   void contains(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const
   {
-    contains_async(__stream, __first, __last, __output_begin);
-    __sync(__stream);
+    __ref.contains(__stream, __first, __last, __output_begin);
   }
 
   //! @brief Asynchronously indicates whether each key in `[__first, __last)` is contained in the map.
@@ -353,7 +361,7 @@ public:
   void contains_async(
     ::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const noexcept
   {
-    __impl->contains_async(__stream, __first, __last, __output_begin, ref());
+    __ref.contains_async(__stream, __first, __last, __output_begin);
   }
 
   // ===== Find =====
@@ -373,8 +381,7 @@ public:
   template <class _InputIt, class _OutputIt>
   void find(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const
   {
-    find_async(__stream, __first, __last, __output_begin);
-    __sync(__stream);
+    __ref.find(__stream, __first, __last, __output_begin);
   }
 
   //! @brief Asynchronously, for each key in `[__first, __last)` writes the associated payload, or
@@ -391,7 +398,7 @@ public:
   void
   find_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const noexcept
   {
-    __impl->find_async(__stream, __first, __last, __output_begin, ref());
+    __ref.find_async(__stream, __first, __last, __output_begin);
   }
 
   //! @brief For each key `__first[i]` with `__pred(__stencil[i]) == true` writes the associated payload,
@@ -419,8 +426,7 @@ public:
                _Predicate __pred,
                _OutputIt __output_begin) const
   {
-    find_if_async(__stream, __first, __last, __stencil, __pred, __output_begin);
-    __sync(__stream);
+    __ref.find_if(__stream, __first, __last, __stencil, __pred, __output_begin);
   }
 
   //! @brief Asynchronous version of `find_if`.
@@ -446,7 +452,7 @@ public:
     _Predicate __pred,
     _OutputIt __output_begin) const noexcept
   {
-    __impl->find_if_async(__stream, __first, __last, __stencil, __pred, __output_begin, ref());
+    __ref.find_if_async(__stream, __first, __last, __stencil, __pred, __output_begin);
   }
 
   // ===== Retrieve All =====
@@ -472,11 +478,7 @@ public:
   [[nodiscard]] _CCCL_HOST_API ::cuda::std::pair<_KeyOutputIt, _ValueOutputIt>
   retrieve_all(::cuda::stream_ref __stream, _KeyOutputIt __keys_out, _ValueOutputIt __values_out) const
   {
-    const auto __zipped_out_begin = ::cuda::make_zip_iterator(__keys_out, __values_out);
-    const auto __zipped_out_end   = __impl->retrieve_all(__stream, __zipped_out_begin);
-    const auto __num_out          = __zipped_out_end - __zipped_out_begin;
-
-    return {__keys_out + __num_out, __values_out + __num_out};
+    return __ref.retrieve_all(__stream, __slots.memory_resource(), __keys_out, __values_out);
   }
 
   // ===== Accessors =====
@@ -486,7 +488,7 @@ public:
   //! @return Total slot count
   [[nodiscard]] constexpr size_type capacity() const noexcept
   {
-    return __impl->capacity();
+    return __ref.capacity();
   }
 
   //! @brief Gets a device pointer to the underlying slot storage.
@@ -494,7 +496,7 @@ public:
   //! @return Pointer to the underlying slot storage
   [[nodiscard]] _CCCL_HOST_API value_type* data() const
   {
-    return __impl->data();
+    return __ref.data();
   }
 
   //! @brief Gets the sentinel value used to represent an empty key slot.
@@ -502,7 +504,7 @@ public:
   //! @return The sentinel value used to represent an empty key slot
   [[nodiscard]] constexpr key_type empty_key_sentinel() const noexcept
   {
-    return __impl->empty_key_sentinel();
+    return __ref.empty_key_sentinel();
   }
 
   //! @brief Gets the sentinel value used to represent an empty payload slot.
@@ -510,7 +512,7 @@ public:
   //! @return The sentinel value used to represent an empty payload slot
   [[nodiscard]] constexpr mapped_type empty_value_sentinel() const noexcept
   {
-    return __empty_value_sentinel;
+    return __ref.empty_value_sentinel();
   }
 
   //! @brief Gets the sentinel value used to represent an erased key slot.
@@ -518,7 +520,7 @@ public:
   //! @return The sentinel value used to represent an erased key slot
   [[nodiscard]] constexpr key_type erased_key_sentinel() const noexcept
   {
-    return __impl->erased_key_sentinel();
+    return __ref.erased_key_sentinel();
   }
 
   //! @brief Gets the function used to compare keys for equality.
@@ -526,7 +528,7 @@ public:
   //! @return The function used to compare keys for equality
   [[nodiscard]] constexpr key_equal key_eq() const noexcept
   {
-    return __impl->key_eq();
+    return __ref.key_eq();
   }
 
   //! @brief Gets the function(s) used to hash keys.
@@ -534,7 +536,7 @@ public:
   //! @return The function(s) used to hash keys
   [[nodiscard]] constexpr hasher hash_function() const noexcept
   {
-    return __impl->hash_function();
+    return __ref.hash_function();
   }
 
   //! @brief Gets a device-usable non-owning reference to this map.
@@ -545,19 +547,7 @@ public:
   //! @return A `ref_type` referring to this map
   [[nodiscard]] auto ref() const noexcept -> ref_type
   {
-    auto __slots = typename ref_type::storage_span_type{__impl->storage_ref().data(), __impl->capacity()};
-    return detail::__bitwise_compare(empty_key_sentinel(), erased_key_sentinel())
-           ? ref_type{empty_key{empty_key_sentinel()},
-                      empty_value{empty_value_sentinel()},
-                      __impl->key_eq(),
-                      __impl->probing_scheme(),
-                      __slots}
-           : ref_type{empty_key{empty_key_sentinel()},
-                      empty_value{empty_value_sentinel()},
-                      erased_key{erased_key_sentinel()},
-                      __impl->key_eq(),
-                      __impl->probing_scheme(),
-                      __slots};
+    return __ref;
   }
 };
 } // namespace cuda::experimental::cuco
