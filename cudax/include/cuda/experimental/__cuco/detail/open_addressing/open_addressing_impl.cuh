@@ -8,8 +8,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef _CUDAX___CUCO_DETAIL_OPEN_ADDRESSING_HOST_IMPL_CUH
-#define _CUDAX___CUCO_DETAIL_OPEN_ADDRESSING_HOST_IMPL_CUH
+#ifndef _CUDAX___CUCO_DETAIL_OPEN_ADDRESSING_IMPL_CUH
+#define _CUDAX___CUCO_DETAIL_OPEN_ADDRESSING_IMPL_CUH
 
 #include <cuda/std/detail/__config>
 
@@ -46,7 +46,7 @@
 namespace cuda::experimental::cuco::__open_addressing
 {
 template <class _Ref>
-class __open_addressing_host_impl
+class __open_addressing_impl
 {
   using __key_type   = typename _Ref::key_type;
   using __value_type = typename _Ref::value_type;
@@ -245,4 +245,4 @@ public:
 
 #include <cuda/std/__cccl/epilogue.h>
 
-#endif // _CUDAX___CUCO_DETAIL_OPEN_ADDRESSING_HOST_IMPL_CUH
+#endif // _CUDAX___CUCO_DETAIL_OPEN_ADDRESSING_IMPL_CUH

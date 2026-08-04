@@ -31,7 +31,7 @@
 
 #include <cuda/experimental/__cuco/capacity.cuh>
 #if !_CCCL_COMPILER(NVRTC)
-#  include <cuda/experimental/__cuco/detail/open_addressing/open_addressing_host_impl.cuh>
+#  include <cuda/experimental/__cuco/detail/open_addressing/open_addressing_impl.cuh>
 #endif // !_CCCL_COMPILER(NVRTC)
 #include <cuda/experimental/__cuco/detail/open_addressing/open_addressing_ref_impl.cuh>
 #include <cuda/experimental/__cuco/detail/open_addressing/slot_storage_ref.cuh>
@@ -141,7 +141,7 @@ private:
   __impl_type __impl;
 
 #if !_CCCL_COMPILER(NVRTC)
-  friend class __open_addressing::__open_addressing_host_impl<fixed_capacity_map_ref>;
+  friend class __open_addressing::__open_addressing_impl<fixed_capacity_map_ref>;
 #endif // !_CCCL_COMPILER(NVRTC)
 
 public:
@@ -194,7 +194,7 @@ public:
   //! @param __stream CUDA stream this operation is executed in
   _CCCL_HOST_API void clear(::cuda::stream_ref __stream)
   {
-    __open_addressing::__open_addressing_host_impl<fixed_capacity_map_ref>::clear(__stream, *this);
+    __open_addressing::__open_addressing_impl<fixed_capacity_map_ref>::clear(__stream, *this);
   }
 
   //! @brief Asynchronously erases all elements from the container.
@@ -202,7 +202,7 @@ public:
   //! @param __stream CUDA stream this operation is executed in
   _CCCL_HOST_API void clear_async(::cuda::stream_ref __stream) noexcept
   {
-    __open_addressing::__open_addressing_host_impl<fixed_capacity_map_ref>::clear_async(__stream, *this);
+    __open_addressing::__open_addressing_impl<fixed_capacity_map_ref>::clear_async(__stream, *this);
   }
 
   //! @brief Inserts all key-value pairs in `[__first, __last)`.
@@ -220,7 +220,7 @@ public:
   [[nodiscard]] _CCCL_HOST_API size_type
   insert(::cuda::stream_ref __stream, _MemoryResource __memory_resource, _InputIt __first, _InputIt __last)
   {
-    return __open_addressing::__open_addressing_host_impl<fixed_capacity_map_ref>::insert(
+    return __open_addressing::__open_addressing_impl<fixed_capacity_map_ref>::insert(
       __stream, __memory_resource, __first, __last, *this);
   }
 
@@ -233,8 +233,7 @@ public:
   template <class _InputIt>
   _CCCL_HOST_API void insert_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last) noexcept
   {
-    __open_addressing::__open_addressing_host_impl<fixed_capacity_map_ref>::insert_async(
-      __stream, __first, __last, *this);
+    __open_addressing::__open_addressing_impl<fixed_capacity_map_ref>::insert_async(__stream, __first, __last, *this);
   }
 
   //! @brief Indicates whether each key in `[__first, __last)` is contained in the map.
@@ -253,7 +252,7 @@ public:
   _CCCL_HOST_API void contains_async(
     ::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const noexcept
   {
-    __open_addressing::__open_addressing_host_impl<fixed_capacity_map_ref>::contains_async(
+    __open_addressing::__open_addressing_impl<fixed_capacity_map_ref>::contains_async(
       __stream, __first, __last, __output_begin, *this);
   }
 
@@ -273,7 +272,7 @@ public:
   _CCCL_HOST_API void
   find_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const noexcept
   {
-    __open_addressing::__open_addressing_host_impl<fixed_capacity_map_ref>::find_async(
+    __open_addressing::__open_addressing_impl<fixed_capacity_map_ref>::find_async(
       __stream, __first, __last, __output_begin, *this);
   }
 
@@ -303,7 +302,7 @@ public:
     _Predicate __pred,
     _OutputIt __output_begin) const noexcept
   {
-    __open_addressing::__open_addressing_host_impl<fixed_capacity_map_ref>::find_if_async(
+    __open_addressing::__open_addressing_impl<fixed_capacity_map_ref>::find_if_async(
       __stream, __first, __last, __stencil, __pred, __output_begin, *this);
   }
 
@@ -328,7 +327,7 @@ public:
     _ValueOutputIt __values_out) const
   {
     const auto __zipped_out_begin = ::cuda::make_zip_iterator(__keys_out, __values_out);
-    const auto __zipped_out_end = __open_addressing::__open_addressing_host_impl<fixed_capacity_map_ref>::retrieve_all(
+    const auto __zipped_out_end   = __open_addressing::__open_addressing_impl<fixed_capacity_map_ref>::retrieve_all(
       __stream, __memory_resource, __zipped_out_begin, *this);
     const auto __num_out = __zipped_out_end - __zipped_out_begin;
     return {__keys_out + __num_out, __values_out + __num_out};
