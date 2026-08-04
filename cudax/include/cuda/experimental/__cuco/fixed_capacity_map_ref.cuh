@@ -21,8 +21,24 @@
 #  pragma system_header
 #endif // no system header
 
+#if !_CCCL_COMPILER(NVRTC)
+#  include <cub/device/device_for.cuh>
+#  include <cub/device/device_select.cuh>
+#  include <cub/device/device_transform.cuh>
+#endif // !_CCCL_COMPILER(NVRTC)
+
 #include <cuda/__atomic/atomic.h>
 #include <cuda/__cmath/pow2.h>
+#if !_CCCL_COMPILER(NVRTC)
+#  include <cuda/__container/buffer.h>
+#  include <cuda/__driver/driver_api.h>
+#  include <cuda/__iterator/constant_iterator.h>
+#  include <cuda/__iterator/counting_iterator.h>
+#  include <cuda/__iterator/transform_iterator.h>
+#  include <cuda/__runtime/api_wrapper.h>
+#  include <cuda/std/__execution/env.h>
+#  include <cuda/std/__functional/identity.h>
+#endif // !_CCCL_COMPILER(NVRTC)
 #include <cuda/__iterator/zip_iterator.h>
 #include <cuda/__type_traits/is_bitwise_comparable.h>
 #include <cuda/std/__mdspan/extents.h>
@@ -31,7 +47,9 @@
 
 #include <cuda/experimental/__cuco/capacity.cuh>
 #if !_CCCL_COMPILER(NVRTC)
-#  include <cuda/experimental/__cuco/detail/open_addressing/open_addressing_impl.cuh>
+#  include <cuda/experimental/__cuco/detail/open_addressing/functors.cuh>
+#  include <cuda/experimental/__cuco/detail/open_addressing/kernels.cuh>
+#  include <cuda/experimental/__cuco/detail/utility/cuda.cuh>
 #endif // !_CCCL_COMPILER(NVRTC)
 #include <cuda/experimental/__cuco/detail/open_addressing/open_addressing_ref_impl.cuh>
 #include <cuda/experimental/__cuco/detail/open_addressing/slot_storage_ref.cuh>
@@ -44,10 +62,10 @@
 
 namespace cuda::experimental::cuco
 {
-//! @brief Device non-owning reference type for `fixed_capacity_map`.
+//! @brief Non-owning reference type for `fixed_capacity_map`.
 //!
-//! This lightweight, trivially-copyable reference is intended to be passed by value to device code
-//! for performing insert and lookup operations on the hash map.
+//! This lightweight, trivially-copyable reference provides host bulk operations and can be passed by value to device
+//! code for individual insert and lookup operations on the hash map.
 //!
 //! @note Concurrent modify and lookup on the same map are not supported: lookups perform non-atomic
 //! loads, so a lookup must not run concurrently with an insert (doing so is a data race).
@@ -141,7 +159,21 @@ private:
   __impl_type __impl;
 
 #if !_CCCL_COMPILER(NVRTC)
-  friend class __open_addressing::__open_addressing_impl<fixed_capacity_map_ref>;
+  template <class _MemoryResource>
+  [[nodiscard]] _CCCL_HOST_API static ::cuda::device_buffer<size_type>
+  __make_counter(::cuda::stream_ref __stream, _MemoryResource& __memory_resource)
+  {
+    return ::cuda::device_buffer<size_type>{__stream, __memory_resource, {size_type{0}}};
+  }
+
+  [[nodiscard]] _CCCL_HOST_API static size_type
+  __read_counter(const ::cuda::device_buffer<size_type>& __counter, ::cuda::stream_ref __stream)
+  {
+    size_type __result;
+    ::cuda::__driver::__memcpyAsync(&__result, __counter.data(), sizeof(size_type), __stream.get());
+    __stream.sync();
+    return __result;
+  }
 #endif // !_CCCL_COMPILER(NVRTC)
 
 public:
@@ -194,15 +226,27 @@ public:
   //! @param __stream CUDA stream this operation is executed in
   _CCCL_HOST_API void clear(::cuda::stream_ref __stream)
   {
-    __open_addressing::__open_addressing_impl<fixed_capacity_map_ref>::clear(__stream, *this);
+    clear_async(__stream);
+    __stream.sync();
   }
 
   //! @brief Asynchronously erases all elements from the container.
   //!
   //! @param __stream CUDA stream this operation is executed in
-  _CCCL_HOST_API void clear_async(::cuda::stream_ref __stream) noexcept
+  _CCCL_HOST_API void clear_async(::cuda::stream_ref __stream)
   {
-    __open_addressing::__open_addressing_impl<fixed_capacity_map_ref>::clear_async(__stream, *this);
+    const auto __n = capacity();
+    if (__n == 0)
+    {
+      return;
+    }
+    _CCCL_TRY_CUDA_API(
+      CUB_NS_QUALIFIER::DeviceTransform::Fill,
+      "cuco: failed to clear slot storage",
+      data(),
+      static_cast<detail::__index_type>(__n),
+      value_type{empty_key_sentinel(), empty_value_sentinel()},
+      __stream);
   }
 
   //! @brief Inserts all key-value pairs in `[__first, __last)`.
@@ -220,8 +264,20 @@ public:
   [[nodiscard]] _CCCL_HOST_API size_type
   insert(::cuda::stream_ref __stream, _MemoryResource __memory_resource, _InputIt __first, _InputIt __last)
   {
-    return __open_addressing::__open_addressing_impl<fixed_capacity_map_ref>::insert(
-      __stream, __memory_resource, __first, __last, *this);
+    const auto __num_keys = detail::__distance(__first, __last);
+    if (__num_keys == 0)
+    {
+      return 0;
+    }
+
+    auto __counter         = __make_counter(__stream, __memory_resource);
+    const auto __grid_size = detail::__grid_size(__num_keys, cg_size);
+
+    __open_addressing::__insert_if_n<cg_size, detail::__default_block_size>
+      <<<static_cast<unsigned>(__grid_size), detail::__default_block_size, 0, __stream.get()>>>(
+        __first, __num_keys, ::cuda::constant_iterator<bool>{true}, ::cuda::std::identity{}, __counter.data(), *this);
+
+    return __read_counter(__counter, __stream);
   }
 
   //! @brief Asynchronously inserts all key-value pairs in `[__first, __last)`.
@@ -231,9 +287,27 @@ public:
   //! @param __first Beginning of the input sequence
   //! @param __last End of the input sequence
   template <class _InputIt>
-  _CCCL_HOST_API void insert_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last) noexcept
+  _CCCL_HOST_API void insert_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last)
   {
-    __open_addressing::__open_addressing_impl<fixed_capacity_map_ref>::insert_async(__stream, __first, __last, *this);
+    const auto __num_keys = detail::__distance(__first, __last);
+    if (__num_keys == 0)
+    {
+      return;
+    }
+
+    if constexpr (cg_size == 1)
+    {
+      __open_addressing::__insert_if_fn __op{
+        __first, ::cuda::constant_iterator<bool>{true}, ::cuda::std::identity{}, *this};
+      _CCCL_TRY_CUDA_API(CUB_NS_QUALIFIER::DeviceFor::Bulk, "cuco: failed to insert keys", __num_keys, __op, __stream);
+    }
+    else
+    {
+      const auto __grid_size = detail::__grid_size(__num_keys, cg_size);
+      __open_addressing::__insert_if_n<cg_size, detail::__default_block_size>
+        <<<static_cast<unsigned>(__grid_size), detail::__default_block_size, 0, __stream.get()>>>(
+          __first, __num_keys, ::cuda::constant_iterator<bool>{true}, ::cuda::std::identity{}, *this);
+    }
   }
 
   //! @brief Indicates whether each key in `[__first, __last)` is contained in the map.
@@ -249,11 +323,28 @@ public:
 
   //! @brief Asynchronously indicates whether each key in `[__first, __last)` is contained in the map.
   template <class _InputIt, class _OutputIt>
-  _CCCL_HOST_API void contains_async(
-    ::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const noexcept
+  _CCCL_HOST_API void
+  contains_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const
   {
-    __open_addressing::__open_addressing_impl<fixed_capacity_map_ref>::contains_async(
-      __stream, __first, __last, __output_begin, *this);
+    const auto __num_keys = detail::__distance(__first, __last);
+    if (__num_keys == 0)
+    {
+      return;
+    }
+
+    if constexpr (cg_size == 1)
+    {
+      __open_addressing::__contains_if_fn __op{
+        __first, ::cuda::constant_iterator<bool>{true}, ::cuda::std::identity{}, __output_begin, *this};
+      _CCCL_TRY_CUDA_API(CUB_NS_QUALIFIER::DeviceFor::Bulk, "cuco: failed to query keys", __num_keys, __op, __stream);
+    }
+    else
+    {
+      const auto __grid_size = detail::__grid_size(__num_keys, cg_size);
+      __open_addressing::__contains_if_n<cg_size, detail::__default_block_size>
+        <<<static_cast<unsigned>(__grid_size), detail::__default_block_size, 0, __stream.get()>>>(
+          __first, __num_keys, ::cuda::constant_iterator<bool>{true}, ::cuda::std::identity{}, __output_begin, *this);
+    }
   }
 
   //! @brief Finds the mapped value for every key in `[__first, __last)`.
@@ -270,10 +361,10 @@ public:
   //! @brief Asynchronously finds the mapped value for every key in `[__first, __last)`.
   template <class _InputIt, class _OutputIt>
   _CCCL_HOST_API void
-  find_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const noexcept
+  find_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const
   {
-    __open_addressing::__open_addressing_impl<fixed_capacity_map_ref>::find_async(
-      __stream, __first, __last, __output_begin, *this);
+    find_if_async(
+      __stream, __first, __last, ::cuda::constant_iterator<bool>{true}, ::cuda::std::identity{}, __output_begin);
   }
 
   //! @brief Finds mapped values for keys selected by a stencil predicate.
@@ -300,10 +391,18 @@ public:
     _InputIt __last,
     _StencilIt __stencil,
     _Predicate __pred,
-    _OutputIt __output_begin) const noexcept
+    _OutputIt __output_begin) const
   {
-    __open_addressing::__open_addressing_impl<fixed_capacity_map_ref>::find_if_async(
-      __stream, __first, __last, __stencil, __pred, __output_begin, *this);
+    const auto __num_keys = detail::__distance(__first, __last);
+    if (__num_keys == 0)
+    {
+      return;
+    }
+
+    const auto __grid_size = detail::__grid_size(__num_keys, cg_size);
+    __open_addressing::__find_if_n<cg_size, detail::__default_block_size>
+      <<<static_cast<unsigned>(__grid_size), detail::__default_block_size, 0, __stream.get()>>>(
+        __first, __num_keys, __stencil, __pred, __output_begin, *this);
   }
 
   //! @brief Retrieves all keys and mapped values.
@@ -326,10 +425,26 @@ public:
     _KeyOutputIt __keys_out,
     _ValueOutputIt __values_out) const
   {
+    auto __counter                = __make_counter(__stream, __memory_resource);
     const auto __zipped_out_begin = ::cuda::make_zip_iterator(__keys_out, __values_out);
-    const auto __zipped_out_end   = __open_addressing::__open_addressing_impl<fixed_capacity_map_ref>::retrieve_all(
-      __stream, __memory_resource, __zipped_out_begin, *this);
-    const auto __num_out = __zipped_out_end - __zipped_out_begin;
+    const auto __input_begin      = ::cuda::make_transform_iterator(
+      ::cuda::counting_iterator<size_type>{0},
+      __open_addressing::__get_slot<true, __storage_ref_type>{__impl.storage_ref()});
+    const auto __is_filled =
+      __open_addressing::__slot_is_filled<true, key_type>{empty_key_sentinel(), erased_key_sentinel()};
+    const auto __env = ::cuda::std::execution::env{__stream, __memory_resource};
+
+    _CCCL_TRY_CUDA_API(
+      CUB_NS_QUALIFIER::DeviceSelect::If,
+      "cuco: failed to retrieve all elements",
+      __input_begin,
+      __zipped_out_begin,
+      __counter.data(),
+      capacity(),
+      __is_filled,
+      __env);
+
+    const auto __num_out = __read_counter(__counter, __stream);
     return {__keys_out + __num_out, __values_out + __num_out};
   }
 #endif // !_CCCL_COMPILER(NVRTC)
