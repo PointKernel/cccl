@@ -320,6 +320,68 @@ public:
     __impl->insert_async(__stream, __first, __last, ref());
   }
 
+  //! @brief Inserts each key-value pair and returns its stored mapped value and insertion status.
+  //!
+  //! For each input pair, writes the stored mapped value and `true` when the pair is inserted. If
+  //! an equivalent key is already present, leaves the existing pair unchanged, writes its mapped
+  //! value, and writes `false`. If no slot is available, writes `empty_value_sentinel()` and
+  //! `false`.
+  //!
+  //! @note This function synchronizes the given stream. For asynchronous execution use
+  //! `insert_and_find_async`.
+  //! @note If multiple input pairs have equivalent keys, it is unspecified which pair is inserted.
+  //! @note On pre-Volta GPUs, this operation is unavailable when `sizeof(value_type) > 8`.
+  //!
+  //! @tparam _InputIt Device accessible random access input iterator whose value type is
+  //! convertible to the map's `value_type`
+  //! @tparam _FoundIt Device accessible random access output iterator assignable from `mapped_type`
+  //! @tparam _InsertedIt Device accessible random access output iterator assignable from `bool`
+  //!
+  //! @param __stream CUDA stream used for insert
+  //! @param __first Beginning of the sequence of key-value pairs
+  //! @param __last End of the sequence of key-value pairs
+  //! @param __found_begin Beginning of the mapped-value output sequence
+  //! @param __inserted_begin Beginning of the insertion-status output sequence
+  template <class _InputIt, class _FoundIt, class _InsertedIt>
+  void insert_and_find(
+    ::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _FoundIt __found_begin, _InsertedIt __inserted_begin)
+  {
+    insert_and_find_async(__stream, __first, __last, __found_begin, __inserted_begin);
+    __sync(__stream);
+  }
+
+  //! @brief Asynchronously inserts each key-value pair and returns its stored mapped value and
+  //! insertion status.
+  //!
+  //! For each input pair, writes the stored mapped value and `true` when the pair is inserted. If
+  //! an equivalent key is already present, leaves the existing pair unchanged, writes its mapped
+  //! value, and writes `false`. If no slot is available, writes `empty_value_sentinel()` and
+  //! `false`.
+  //!
+  //! @note If multiple input pairs have equivalent keys, it is unspecified which pair is inserted.
+  //! @note On pre-Volta GPUs, this operation is unavailable when `sizeof(value_type) > 8`.
+  //!
+  //! @tparam _InputIt Device accessible random access input iterator whose value type is
+  //! convertible to the map's `value_type`
+  //! @tparam _FoundIt Device accessible random access output iterator assignable from `mapped_type`
+  //! @tparam _InsertedIt Device accessible random access output iterator assignable from `bool`
+  //!
+  //! @param __stream CUDA stream used for insert
+  //! @param __first Beginning of the sequence of key-value pairs
+  //! @param __last End of the sequence of key-value pairs
+  //! @param __found_begin Beginning of the mapped-value output sequence
+  //! @param __inserted_begin Beginning of the insertion-status output sequence
+  template <class _InputIt, class _FoundIt, class _InsertedIt>
+  void insert_and_find_async(
+    ::cuda::stream_ref __stream,
+    _InputIt __first,
+    _InputIt __last,
+    _FoundIt __found_begin,
+    _InsertedIt __inserted_begin) noexcept
+  {
+    __impl->insert_and_find_async(__stream, __first, __last, __found_begin, __inserted_begin, ref());
+  }
+
   // ===== Contains =====
 
   //! @brief Indicates whether each key in `[__first, __last)` is contained in the map.

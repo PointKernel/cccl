@@ -424,6 +424,103 @@ public:
     }
   }
 
+  //! @brief Inserts an element and returns its slot.
+  //!
+  //! If an equivalent key is already present, returns an iterator to the existing element and
+  //! `false`. Otherwise, returns an iterator to the inserted element and `true`.
+  //!
+  //! @tparam _Value Input type convertible to `__value_type`
+  //!
+  //! @param __value The element to insert
+  //!
+  //! @return The element's iterator and whether insertion succeeded
+  template <class _Value>
+  [[nodiscard]] _CCCL_DEVICE_API ::cuda::std::pair<__iterator, bool> insert_and_find(_Value __value) noexcept
+  {
+    static_assert(__cg_size == 1, "Non-CG operation is incompatible with the current probing scheme");
+#  if (__CUDA_ARCH__ < 700)
+    // Waiting for a separately written payload requires independent thread scheduling.
+    static_assert(sizeof(__value_type) <= 8,
+                  "insert_and_find is not supported for slot types larger than 8 bytes on pre-Volta GPUs.");
+#  endif
+
+    const auto __val = __heterogeneous_value(__value);
+    const auto __key = __extract_key(__val);
+    auto __probing_iter =
+      __probing_scheme.template make_iterator<__bucket_size>(__key, __storage_ref.capacity_extent());
+    const auto __init_idx = *__probing_iter;
+
+    while (true)
+    {
+      const auto __bucket_slots = __storage_ref[*__probing_iter];
+
+      for (::cuda::std::int32_t __i = 0; __i < __bucket_size; ++__i)
+      {
+        const auto __state =
+          __predicate.template operator()<detail::__is_insert::__yes>(__key, __extract_key(__bucket_slots[__i]));
+        auto* const __slot_ptr = __get_slot_ptr(*__probing_iter, __i);
+
+        if (__state == detail::__equal_result::__equal)
+        {
+          __maybe_wait_for_payload(__slot_ptr);
+          return {__iterator{__slot_ptr}, false};
+        }
+        if (__state == detail::__equal_result::__available)
+        {
+          switch (__attempt_insert_stable(__slot_ptr, __bucket_slots[__i], __val))
+          {
+            case __insert_result::__success:
+              __maybe_wait_for_payload(__slot_ptr);
+              return {__iterator{__slot_ptr}, true};
+            case __insert_result::__duplicate:
+              __maybe_wait_for_payload(__slot_ptr);
+              return {__iterator{__slot_ptr}, false};
+            default:
+              continue;
+          }
+        }
+      }
+
+      ++__probing_iter;
+      if (*__probing_iter == __init_idx)
+      {
+        return {end(), false};
+      }
+    }
+  }
+
+  //! @brief Cooperative-group variant of `insert_and_find`.
+  //!
+  //! @tparam _Value Input type convertible to `__value_type`
+  //! @tparam _ParentCG Parent cooperative group type
+  //!
+  //! @param __group The cooperative group used for this operation
+  //! @param __value The element to insert
+  //!
+  //! @return The element's iterator and whether insertion succeeded
+  template <class _Value, class _ParentCG>
+  [[nodiscard]] _CCCL_DEVICE_API ::cuda::std::pair<__iterator, bool>
+  insert_and_find(::cooperative_groups::thread_block_tile<__cg_size, _ParentCG> __group, _Value __value) noexcept
+  {
+#  if (__CUDA_ARCH__ < 700)
+    // Waiting for a separately written payload requires independent thread scheduling.
+    static_assert(sizeof(__value_type) <= 8,
+                  "insert_and_find is not supported for slot types larger than 8 bytes on pre-Volta GPUs.");
+#  endif
+
+    const auto __val      = __heterogeneous_value(__value);
+    const auto __key      = __extract_key(__val);
+    const auto __inserted = insert(__group, __val);
+    const auto __found    = find(__group, __key);
+
+    if (__found != end() && __group.thread_rank() == 0)
+    {
+      __maybe_wait_for_payload(__found);
+    }
+    __group.sync();
+    return {__found, __inserted};
+  }
+
   //!
   //! @brief Indicates whether the probe __key `__key` was inserted into the container.
   //!
@@ -1016,6 +1113,20 @@ public:
     {
       __current = __ref.load(::cuda::std::memory_order_relaxed);
     } while (detail::__bitwise_compare(__current, __sentinel));
+  }
+
+  //! @brief Waits for a separately written payload when the slot cannot be inserted atomically.
+  //!
+  //! @tparam _SlotPtr Pointer-like type referring to a slot
+  //!
+  //! @param __slot_ptr Pointer to the slot whose payload may still be pending
+  template <class _SlotPtr>
+  _CCCL_DEVICE_API void __maybe_wait_for_payload(_SlotPtr __slot_ptr) const noexcept
+  {
+    if constexpr (__has_payload && sizeof(__value_type) > 8)
+    {
+      __wait_for_payload(__slot_ptr->second, empty_value_sentinel());
+    }
   }
 #endif // _CCCL_CUDA_COMPILATION()
 

@@ -291,6 +291,30 @@ public:
     }
   }
 
+  //! @brief Asynchronously inserts each element and returns its mapped value and insertion status.
+  //!
+  //! @throws cuda_error if the insert operation fails to launch
+  template <class _InputIt, class _FoundIt, class _InsertedIt, class _Ref>
+  _CCCL_HOST_API void insert_and_find_async(
+    ::cuda::stream_ref __stream,
+    _InputIt __first,
+    _InputIt __last,
+    _FoundIt __found_begin,
+    _InsertedIt __inserted_begin,
+    _Ref __container_ref)
+  {
+    const auto __num_keys = detail::__distance(__first, __last);
+    if (__num_keys == 0)
+    {
+      return;
+    }
+
+    const auto __grid_size = detail::__grid_size(__num_keys, __cg_size);
+    __open_addressing::__insert_and_find_n<__cg_size, detail::__default_block_size>
+      <<<static_cast<unsigned>(__grid_size), detail::__default_block_size, 0, __stream.get()>>>(
+        __first, __num_keys, __found_begin, __inserted_begin, __container_ref);
+  }
+
   //! @brief Asynchronously checks if keys in `[first, last)` exist in the container.
   //!
   //! @throws cuda_error if the query operation fails to launch
