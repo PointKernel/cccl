@@ -294,7 +294,6 @@ public:
   //! Otherwise, returns an iterator to the inserted pair and `true`.
   //!
   //! @note Concurrent calls for the same key return the payload of the insertion that succeeds.
-  //! @note On pre-Volta GPUs, this operation is unavailable when `sizeof(value_type) > 8`.
   //!
   //! @tparam _Value Input type convertible to `value_type`
   //!
@@ -313,7 +312,6 @@ public:
   //! Otherwise, returns an iterator to the inserted pair and `true`.
   //!
   //! @note Concurrent calls for the same key return the payload of the insertion that succeeds.
-  //! @note On pre-Volta GPUs, this operation is unavailable when `sizeof(value_type) > 8`.
   //!
   //! @tparam _Value Input type convertible to `value_type`
   //! @tparam _ParentCG Parent cooperative group type

@@ -330,7 +330,6 @@ public:
   //! @note This function synchronizes the given stream. For asynchronous execution use
   //! `insert_and_find_async`.
   //! @note If multiple input pairs have equivalent keys, it is unspecified which pair is inserted.
-  //! @note On pre-Volta GPUs, this operation is unavailable when `sizeof(value_type) > 8`.
   //!
   //! @tparam _InputIt Device accessible random access input iterator whose value type is
   //! convertible to the map's `value_type`
@@ -359,7 +358,6 @@ public:
   //! `false`.
   //!
   //! @note If multiple input pairs have equivalent keys, it is unspecified which pair is inserted.
-  //! @note On pre-Volta GPUs, this operation is unavailable when `sizeof(value_type) > 8`.
   //!
   //! @tparam _InputIt Device accessible random access input iterator whose value type is
   //! convertible to the map's `value_type`

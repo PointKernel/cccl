@@ -53,7 +53,7 @@ struct iota_pair
   {
     using key_type    = typename Pair::first_type;
     using mapped_type = typename Pair::second_type;
-    return Pair{static_cast<key_type>(index), static_cast<mapped_type>(index + payload_offset)};
+    return Pair{static_cast<key_type>(index), static_cast<mapped_type>(index) + payload_offset};
   }
 };
 
@@ -65,7 +65,7 @@ struct matches_payloads
 
   _CCCL_DEVICE_API bool operator()(::cuda::std::int32_t index) const noexcept
   {
-    return found[index] == static_cast<Mapped>(index + payload_offset);
+    return found[index] == static_cast<Mapped>(index) + payload_offset;
   }
 };
 
@@ -168,8 +168,8 @@ C2H_TEST(
   CAPTURE(sizeof(key_type), sizeof(mapped_type), cg_size, bucket_size, probing);
 
   ::cuda::stream stream{::cuda::device_ref{0}};
-  auto mr     = ::cuda::device_default_memory_pool(stream.device());
-  auto policy = ::cuda::execution::gpu.with(::cuda::get_stream, stream).with(::cuda::mr::get_memory_resource, mr);
+  auto mr           = ::cuda::device_default_memory_pool(stream.device());
+  const auto policy = ::cuda::execution::gpu.with(::cuda::get_stream, stream).with(::cuda::mr::get_memory_resource, mr);
 
   map_type map{stream,
                mr,

@@ -438,11 +438,6 @@ public:
   [[nodiscard]] _CCCL_DEVICE_API ::cuda::std::pair<__iterator, bool> insert_and_find(_Value __value) noexcept
   {
     static_assert(__cg_size == 1, "Non-CG operation is incompatible with the current probing scheme");
-#  if (__CUDA_ARCH__ < 700)
-    // Waiting for a separately written payload requires independent thread scheduling.
-    static_assert(sizeof(__value_type) <= 8,
-                  "insert_and_find is not supported for slot types larger than 8 bytes on pre-Volta GPUs.");
-#  endif
 
     const auto __val = __heterogeneous_value(__value);
     const auto __key = __extract_key(__val);
@@ -456,8 +451,8 @@ public:
 
       for (::cuda::std::int32_t __i = 0; __i < __bucket_size; ++__i)
       {
-        const auto __state =
-          __predicate.template operator()<detail::__is_insert::__yes>(__key, __extract_key(__bucket_slots[__i]));
+        const auto __slot  = __bucket_slots[__i];
+        const auto __state = __predicate.template operator()<detail::__is_insert::__yes>(__key, __extract_key(__slot));
         auto* const __slot_ptr = __get_slot_ptr(*__probing_iter, __i);
 
         if (__state == detail::__equal_result::__equal)
@@ -467,7 +462,7 @@ public:
         }
         if (__state == detail::__equal_result::__available)
         {
-          switch (__attempt_insert_stable(__slot_ptr, __bucket_slots[__i], __val))
+          switch (__attempt_insert_stable(__slot_ptr, __slot, __val))
           {
             case __insert_result::__success:
               __maybe_wait_for_payload(__slot_ptr);
@@ -502,23 +497,99 @@ public:
   [[nodiscard]] _CCCL_DEVICE_API ::cuda::std::pair<__iterator, bool>
   insert_and_find(::cooperative_groups::thread_block_tile<__cg_size, _ParentCG> __group, _Value __value) noexcept
   {
-#  if (__CUDA_ARCH__ < 700)
-    // Waiting for a separately written payload requires independent thread scheduling.
-    static_assert(sizeof(__value_type) <= 8,
-                  "insert_and_find is not supported for slot types larger than 8 bytes on pre-Volta GPUs.");
-#  endif
+    const auto __val = __heterogeneous_value(__value);
+    const auto __key = __extract_key(__val);
+    auto __probing_iter =
+      __probing_scheme.template make_iterator<__bucket_size>(__group, __key, __storage_ref.capacity_extent());
+    const auto __init_idx = *__probing_iter;
 
-    const auto __val      = __heterogeneous_value(__value);
-    const auto __key      = __extract_key(__val);
-    const auto __inserted = insert(__group, __val);
-    const auto __found    = find(__group, __key);
-
-    if (__found != end() && __group.thread_rank() == 0)
+    while (true)
     {
-      __maybe_wait_for_payload(__found);
+      const auto __bucket_slots = __storage_ref[*__probing_iter];
+      auto __expected_slot      = empty_slot_sentinel();
+      auto __probing_result     = __bucket_probing_results{detail::__equal_result::__unequal, -1};
+
+      for (::cuda::std::int32_t __i = 0; __i < __bucket_size; ++__i)
+      {
+        const auto __slot  = __bucket_slots[__i];
+        const auto __state = __predicate.template operator()<detail::__is_insert::__yes>(__key, __extract_key(__slot));
+
+        if (__state == detail::__equal_result::__available)
+        {
+          __expected_slot  = __slot;
+          __probing_result = __bucket_probing_results{__state, __i};
+          break;
+        }
+        if constexpr (!__allows_duplicates)
+        {
+          if (__state == detail::__equal_result::__equal)
+          {
+            __expected_slot  = __slot;
+            __probing_result = __bucket_probing_results{__state, __i};
+            break;
+          }
+        }
+      }
+
+      const auto [__state, __intra_bucket_index] = __probing_result;
+
+      const auto __group_finds_equal = __group.ballot(__state == detail::__equal_result::__equal);
+      if (__group_finds_equal != 0)
+      {
+        const auto __src_lane      = __ffs(__group_finds_equal) - 1;
+        const auto __probing_index = __group.shfl(*__probing_iter, __src_lane);
+        const auto __slot_index    = __group.shfl(__intra_bucket_index, __src_lane);
+        auto* const __slot_ptr     = __get_slot_ptr(__probing_index, __slot_index);
+
+        if (__group.thread_rank() == __src_lane)
+        {
+          __maybe_wait_for_payload(__slot_ptr);
+        }
+        __group.sync();
+        return {__iterator{__slot_ptr}, false};
+      }
+
+      const auto __group_contains_available = __group.ballot(__state == detail::__equal_result::__available);
+      if (__group_contains_available != 0)
+      {
+        const auto __src_lane      = __ffs(__group_contains_available) - 1;
+        const auto __probing_index = __group.shfl(*__probing_iter, __src_lane);
+        const auto __slot_index    = __group.shfl(__intra_bucket_index, __src_lane);
+        auto* const __slot_ptr     = __get_slot_ptr(__probing_index, __slot_index);
+        auto __status              = __insert_result::__continue;
+
+        if (__group.thread_rank() == __src_lane)
+        {
+          __status = __attempt_insert_stable(__slot_ptr, __expected_slot, __val);
+        }
+
+        switch (__group.shfl(__status, __src_lane))
+        {
+          case __insert_result::__success:
+            if (__group.thread_rank() == __src_lane)
+            {
+              __maybe_wait_for_payload(__slot_ptr);
+            }
+            __group.sync();
+            return {__iterator{__slot_ptr}, true};
+          case __insert_result::__duplicate:
+            if (__group.thread_rank() == __src_lane)
+            {
+              __maybe_wait_for_payload(__slot_ptr);
+            }
+            __group.sync();
+            return {__iterator{__slot_ptr}, false};
+          default:
+            continue;
+        }
+      }
+
+      ++__probing_iter;
+      if (*__probing_iter == __init_idx)
+      {
+        return {end(), false};
+      }
     }
-    __group.sync();
-    return {__found, __inserted};
   }
 
   //!
