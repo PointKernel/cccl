@@ -13,6 +13,7 @@
 #  pragma nv_diag_suppress 20011
 #endif // defined(__CUDACC__)
 
+#include <cuda/__cccl_config>
 #include <cuda/buffer>
 #include <cuda/functional>
 #include <cuda/iterator>
@@ -140,12 +141,12 @@ __global__ void device_insert_and_find_kernel(Ref ref, typename Ref::mapped_type
 C2H_TEST(
   "fixed_capacity_map insert_and_find", "[container]", key_types, mapped_types, cg_sizes, bucket_sizes, probing_kinds)
 {
-  using key_type            = c2h::get<0, TestType>;
-  using mapped_type         = c2h::get<1, TestType>;
-  constexpr int cg_size     = c2h::get<2, TestType>::value;
-  constexpr int bucket_size = c2h::get<3, TestType>::value;
-  constexpr int probing     = c2h::get<4, TestType>::value;
-  using hasher              = ::cuda::hash<key_type>;
+  using key_type                             = c2h::get<0, TestType>;
+  using mapped_type                          = c2h::get<1, TestType>;
+  [[maybe_unused]] constexpr int cg_size     = c2h::get<2, TestType>::value;
+  [[maybe_unused]] constexpr int bucket_size = c2h::get<3, TestType>::value;
+  [[maybe_unused]] constexpr int probing     = c2h::get<4, TestType>::value;
+  using hasher                               = ::cuda::hash<key_type>;
   using probing_type =
     ::cuda::std::conditional_t<probing == 0,
                                cudax::cuco::linear_probing<cg_size, hasher>,
@@ -172,7 +173,7 @@ C2H_TEST(
 
   map_type map{stream,
                mr,
-               static_cast<::cuda::std::size_t>(2 * num_keys),
+               ::cuda::std::size_t{num_keys} * 2,
                cudax::cuco::empty_key{empty_key_sentinel},
                cudax::cuco::empty_value{empty_value_sentinel}};
 
