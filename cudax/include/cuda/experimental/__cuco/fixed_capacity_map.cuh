@@ -450,6 +450,77 @@ public:
     __impl->find_if_async(__stream, __first, __last, __stencil, __pred, __output_begin, ref());
   }
 
+  // ===== For-each =====
+
+  //! @brief Applies a callback to the copy of every filled slot in the map.
+  //!
+  //! @note This function synchronizes the given stream. For asynchronous execution use
+  //! `for_each_async`.
+  //! @note The return value of the callback, if any, is ignored.
+  //!
+  //! @tparam _CallbackOp Unary callback function object type
+  //!
+  //! @param __stream CUDA stream used for this operation
+  //! @param __callback Function to apply to every filled slot
+  template <class _CallbackOp>
+  void for_each(::cuda::stream_ref __stream, _CallbackOp __callback) const
+  {
+    for_each_async(__stream, __callback);
+    __sync(__stream);
+  }
+
+  //! @brief Asynchronously applies a callback to the copy of every filled slot in the map.
+  //!
+  //! @note The return value of the callback, if any, is ignored.
+  //!
+  //! @tparam _CallbackOp Unary callback function object type
+  //!
+  //! @param __stream CUDA stream used for this operation
+  //! @param __callback Function to apply to every filled slot
+  template <class _CallbackOp>
+  void for_each_async(::cuda::stream_ref __stream, _CallbackOp __callback) const
+  {
+    __impl->for_each_async(__stream, __callback);
+  }
+
+  //! @brief Applies a callback to the slot matching each key in the input range.
+  //!
+  //! @note This function synchronizes the given stream. For asynchronous execution use
+  //! `for_each_async`.
+  //! @note The return value of the callback, if any, is ignored.
+  //!
+  //! @tparam _InputIt Device-accessible random access input iterator
+  //! @tparam _CallbackOp Unary callback function object type
+  //!
+  //! @param __stream CUDA stream used for this operation
+  //! @param __first Beginning of the sequence of keys
+  //! @param __last End of the sequence of keys
+  //! @param __callback Function to apply to every matching slot
+  template <class _InputIt, class _CallbackOp>
+  void for_each(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _CallbackOp __callback) const
+  {
+    for_each_async(__stream, __first, __last, __callback);
+    __sync(__stream);
+  }
+
+  //! @brief Asynchronously applies a callback to the slot matching each key in the input range.
+  //!
+  //! @note The return value of the callback, if any, is ignored.
+  //!
+  //! @tparam _InputIt Device-accessible random access input iterator
+  //! @tparam _CallbackOp Unary callback function object type
+  //!
+  //! @param __stream CUDA stream used for this operation
+  //! @param __first Beginning of the sequence of keys
+  //! @param __last End of the sequence of keys
+  //! @param __callback Function to apply to every matching slot
+  template <class _InputIt, class _CallbackOp>
+  void
+  for_each_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _CallbackOp __callback) const noexcept
+  {
+    __impl->for_each_async(__stream, __first, __last, __callback, ref());
+  }
+
   // ===== Retrieve All =====
 
   //! @brief Retrieves all keys and their associated mapped values.

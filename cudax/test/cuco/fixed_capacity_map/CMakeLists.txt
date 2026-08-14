@@ -16,6 +16,10 @@ cudax_add_catch2_test(test_target cuco.fixed_capacity_map.find ${cudax_target}
   test_find.cu
 )
 
+cudax_add_catch2_test(test_target cuco.fixed_capacity_map.for_each ${cudax_target}
+  test_for_each.cu
+)
+
 cudax_add_catch2_test(test_target cuco.fixed_capacity_map.rebind ${cudax_target}
   test_rebind.cu
 )

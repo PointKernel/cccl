@@ -410,6 +410,44 @@ public:
   {
     return __impl.find(__group, __key);
   }
+
+  // ===== For-each operations =====
+
+  //! @brief Applies a callback to the slot matching a key.
+  //!
+  //! @note The return value of the callback, if any, is ignored.
+  //!
+  //! @tparam _ProbeKey Probe key type
+  //! @tparam _CallbackOp Unary callback function object type
+  //!
+  //! @param __key The key to search for
+  //! @param __callback Function to apply to the copy of the matching key-value pair
+  template <class _ProbeKey, class _CallbackOp>
+  _CCCL_DEVICE_API void for_each(_ProbeKey __key, _CallbackOp __callback) const noexcept
+  {
+    __impl.for_each(__key, __callback);
+  }
+
+  //! @brief Cooperative-group variant of `for_each`.
+  //!
+  //! @note Any thread in the group may invoke the callback when it finds the matching key-value pair.
+  //! @note Synchronizing the group within the callback is undefined behavior.
+  //! @note The return value of the callback, if any, is ignored.
+  //!
+  //! @tparam _ParentCG Parent cooperative group type
+  //! @tparam _ProbeKey Probe key type
+  //! @tparam _CallbackOp Unary callback function object type
+  //!
+  //! @param __group Cooperative group of size cg_size performing this lookup
+  //! @param __key The key to search for
+  //! @param __callback Function to apply to the copy of the matching key-value pair
+  template <class _ParentCG, class _ProbeKey, class _CallbackOp>
+  _CCCL_DEVICE_API void for_each(::cooperative_groups::thread_block_tile<cg_size, _ParentCG> __group,
+                                 _ProbeKey __key,
+                                 _CallbackOp __callback) const noexcept
+  {
+    __impl.for_each(__group, __key, __callback);
+  }
 #endif // _CCCL_CUDA_COMPILATION()
 };
 } // namespace cuda::experimental::cuco

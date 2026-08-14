@@ -284,6 +284,43 @@ _CCCL_KERNEL_ATTRIBUTES _CCCL_LAUNCH_BOUNDS(_BlockSize) void __find_if_n(
     __idx += __loop_stride;
   }
 }
+
+//! @brief Applies a callback to the slot matching each key in the input range.
+//!
+//! @tparam _CgSize Number of threads used to handle one key
+//! @tparam _BlockSize Number of threads in each block
+//! @tparam _InputIt Device-accessible random access input iterator
+//! @tparam _CallbackOp Unary callback function object type
+//! @tparam _Ref Device container reference type
+//!
+//! @param __first Beginning of the sequence of keys
+//! @param __n Number of keys
+//! @param __callback Function to apply to every matching slot
+//! @param __ref Device container reference used to access the slot storage
+template <int _CgSize, int _BlockSize, class _InputIt, class _CallbackOp, class _Ref>
+_CCCL_KERNEL_ATTRIBUTES _CCCL_LAUNCH_BOUNDS(_BlockSize) void
+__for_each_n(_InputIt __first, detail::__index_type __n, _CallbackOp __callback, _Ref __ref)
+{
+  const auto __block       = ::cooperative_groups::this_thread_block();
+  const auto __loop_stride = detail::__grid_stride() / _CgSize;
+  auto __idx               = detail::__global_thread_id() / _CgSize;
+
+  while (__idx < __n)
+  {
+    using __value_type       = typename ::cuda::std::iterator_traits<_InputIt>::value_type;
+    const __value_type __key = *(__first + __idx);
+    if constexpr (_CgSize == 1)
+    {
+      __ref.for_each(__key, __callback);
+    }
+    else
+    {
+      const auto __tile = ::cooperative_groups::tiled_partition<_CgSize, ::cooperative_groups::thread_block>(__block);
+      __ref.for_each(__tile, __key, __callback);
+    }
+    __idx += __loop_stride;
+  }
+}
 } // namespace cuda::experimental::cuco::__open_addressing
 
 _CCCL_DIAG_POP

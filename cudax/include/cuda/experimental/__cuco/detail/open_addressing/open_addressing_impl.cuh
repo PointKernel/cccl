@@ -385,6 +385,62 @@ public:
       __container_ref);
   }
 
+  //! @brief Asynchronously applies a callback to every filled slot in the container.
+  //!
+  //! @note The return value of the callback, if any, is ignored.
+  //!
+  //! @tparam _CallbackOp Unary callback function object type
+  //!
+  //! @param __stream CUDA stream used for this operation
+  //! @param __callback Function to apply to every filled slot
+  template <class _CallbackOp>
+  _CCCL_HOST_API void for_each_async(::cuda::stream_ref __stream, _CallbackOp __callback) const
+  {
+    using __is_filled_type = __slot_is_filled<__has_payload, __key_type>;
+    const __is_filled_type __is_filled{empty_key_sentinel(), erased_key_sentinel()};
+    __for_each_filled_slot<_CallbackOp, __is_filled_type> __op{__callback, __is_filled};
+
+    const auto __storage_ref = storage_ref();
+    _CCCL_TRY_CUDA_API(
+      CUB_NS_QUALIFIER::DeviceFor::ForEachCopyN,
+      "cuco: failed to apply callback to filled slots",
+      __storage_ref.data(),
+      __storage_ref.capacity(),
+      __op,
+      __stream);
+  }
+
+  //! @brief Asynchronously applies a callback to the slot matching each key in the input range.
+  //!
+  //! @note The return value of the callback, if any, is ignored.
+  //!
+  //! @tparam _InputIt Device-accessible random access input iterator
+  //! @tparam _CallbackOp Unary callback function object type
+  //! @tparam _Ref Device container reference type
+  //!
+  //! @param __stream CUDA stream used for this operation
+  //! @param __first Beginning of the sequence of keys
+  //! @param __last End of the sequence of keys
+  //! @param __callback Function to apply to every matching slot
+  //! @param __container_ref Device container reference used to access the slot storage
+  template <class _InputIt, class _CallbackOp, class _Ref>
+  _CCCL_HOST_API void for_each_async(
+    ::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _CallbackOp __callback, _Ref __container_ref)
+    const noexcept
+  {
+    const auto __num_keys = detail::__distance(__first, __last);
+    if (__num_keys == 0)
+    {
+      return;
+    }
+
+    const auto __grid_size = detail::__grid_size(__num_keys, __cg_size);
+
+    __open_addressing::__for_each_n<__cg_size, detail::__default_block_size>
+      <<<static_cast<unsigned>(__grid_size), detail::__default_block_size, 0, __stream.get()>>>(
+        __first, __num_keys, __callback, __container_ref);
+  }
+
   //! @brief Retrieves all elements in the container.
   //!
   //! @note This function synchronizes the given stream.

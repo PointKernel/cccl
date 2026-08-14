@@ -112,6 +112,31 @@ private:
         && !detail::__bitwise_compare(__key, __erased_key_sentinel_);
   }
 };
+
+//! @brief Device functor applying a callback to every filled slot.
+//!
+//! @tparam _CallbackOp Unary callback function object type
+//! @tparam _IsFilled Filled-slot predicate type
+template <class _CallbackOp, class _IsFilled>
+struct __for_each_filled_slot
+{
+  _CallbackOp __callback_;
+  _IsFilled __is_filled_;
+
+  //! @brief Applies the callback when the slot is filled.
+  //!
+  //! @tparam _Slot Slot type
+  //!
+  //! @param __slot Slot to inspect
+  template <class _Slot>
+  _CCCL_DEVICE_API void operator()(_Slot __slot)
+  {
+    if (__is_filled_(__slot))
+    {
+      __callback_(__slot);
+    }
+  }
+};
 } // namespace cuda::experimental::cuco::__open_addressing
 
 #include <cuda/std/__cccl/epilogue.h>

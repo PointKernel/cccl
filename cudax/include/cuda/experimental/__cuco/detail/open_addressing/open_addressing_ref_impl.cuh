@@ -609,6 +609,107 @@ public:
   }
 
   //!
+  //! @brief Applies a callback to the slot matching the probe key.
+  //!
+  //! @note The return value of the callback, if any, is ignored.
+  //!
+  //! @tparam _ProbeKey Probe key type
+  //! @tparam _CallbackOp Unary callback function object type
+  //!
+  //! @param __key The key to search for
+  //! @param __callback Function to apply to the copy of the matching key-value pair
+  template <class _ProbeKey, class _CallbackOp>
+  _CCCL_DEVICE_API void for_each(_ProbeKey __key, _CallbackOp __callback) const noexcept
+  {
+    static_assert(__cg_size == 1, "Non-CG operation is incompatible with the current probing scheme");
+    auto __probing_iter =
+      __probing_scheme.template make_iterator<__bucket_size>(__key, __storage_ref.capacity_extent());
+    const auto __init_idx = *__probing_iter;
+
+    while (true)
+    {
+      const auto __bucket_slots = __storage_ref[*__probing_iter];
+
+      for (::cuda::std::int32_t __i = 0; __i < __bucket_size; ++__i)
+      {
+        switch (__predicate.template operator()<detail::__is_insert::__no>(__key, __extract_key(__bucket_slots[__i])))
+        {
+          case detail::__equal_result::__empty:
+            return;
+          case detail::__equal_result::__equal:
+            __callback(__bucket_slots[__i]);
+            return;
+          default:
+            continue;
+        }
+      }
+      ++__probing_iter;
+      if (_CCCL_BUILTIN_EXPECT(*__probing_iter == __init_idx, 0))
+      {
+        return;
+      }
+    }
+  }
+
+  //!
+  //! @brief Cooperative-group variant of `for_each`.
+  //!
+  //! @note Any thread in the group may invoke the callback when it finds the matching key-value pair.
+  //! @note Synchronizing the group within the callback is undefined behavior.
+  //! @note The return value of the callback, if any, is ignored.
+  //!
+  //! @tparam _ProbeKey Probe key type
+  //! @tparam _CallbackOp Unary callback function object type
+  //! @tparam _ParentCG Parent cooperative group type
+  //!
+  //! @param __group Cooperative group performing this lookup
+  //! @param __key The key to search for
+  //! @param __callback Function to apply to the copy of the matching key-value pair
+  template <class _ProbeKey, class _CallbackOp, class _ParentCG>
+  _CCCL_DEVICE_API void for_each(::cooperative_groups::thread_block_tile<__cg_size, _ParentCG> __group,
+                                 _ProbeKey __key,
+                                 _CallbackOp __callback) const noexcept
+  {
+    auto __probing_iter =
+      __probing_scheme.template make_iterator<__bucket_size>(__group, __key, __storage_ref.capacity_extent());
+    const auto __init_idx = *__probing_iter;
+
+    while (true)
+    {
+      const auto __bucket_slots = __storage_ref[*__probing_iter];
+      auto __state              = detail::__equal_result::__unequal;
+      auto __intra_bucket_index = ::cuda::std::int32_t{-1};
+
+      for (::cuda::std::int32_t __i = 0; __i < __bucket_size; ++__i)
+      {
+        const auto __res =
+          __predicate.template operator()<detail::__is_insert::__no>(__key, __extract_key(__bucket_slots[__i]));
+        if (__res != detail::__equal_result::__unequal)
+        {
+          __state              = __res;
+          __intra_bucket_index = __i;
+          break;
+        }
+      }
+
+      if (__state == detail::__equal_result::__equal)
+      {
+        __callback(__bucket_slots[__intra_bucket_index]);
+      }
+      if (__group.any(__state == detail::__equal_result::__empty)
+          || __group.any(__state == detail::__equal_result::__equal))
+      {
+        return;
+      }
+      ++__probing_iter;
+      if (_CCCL_BUILTIN_EXPECT(*__probing_iter == __init_idx, 0))
+      {
+        return;
+      }
+    }
+  }
+
+  //!
   //! @brief Scans a bucket for the first slot available for inserting @p __key.
   //!
   //! Returns the intra-bucket index of the first empty slot, or of a slot already holding an equal
