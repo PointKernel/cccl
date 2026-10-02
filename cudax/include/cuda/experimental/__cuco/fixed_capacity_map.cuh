@@ -271,18 +271,18 @@ public:
   //! @brief Erases all elements from the container. After this call, `size()` returns zero.
   //!
   //! @param __stream CUDA stream this operation is executed in
-  void clear(::cuda::stream_ref __stream)
+  _CCCL_HOST_API void clear(::cuda::stream_ref __stream)
   {
-    __impl->clear(__stream);
+    ref().clear(__stream);
   }
 
   //! @brief Asynchronously erases all elements from the container. After this call, `size()`
   //! returns zero.
   //!
   //! @param __stream CUDA stream this operation is executed in
-  void clear_async(::cuda::stream_ref __stream)
+  _CCCL_HOST_API void clear_async(::cuda::stream_ref __stream)
   {
-    __impl->clear_async(__stream);
+    ref().clear_async(__stream);
   }
 
   // ===== Insert =====
@@ -302,9 +302,9 @@ public:
   //!
   //! @return Number of successful insertions
   template <class _InputIt>
-  size_type insert(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last)
+  _CCCL_HOST_API size_type insert(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last)
   {
-    return __impl->insert(__stream, __first, __last, ref());
+    return ref().insert(__stream, __first, __last, __impl->memory_resource());
   }
 
   //! @brief Asynchronously inserts all keys in the range `[__first, __last)`.
@@ -316,9 +316,9 @@ public:
   //! @param __first Beginning of the sequence of keys
   //! @param __last End of the sequence of keys
   template <class _InputIt>
-  void insert_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last)
+  _CCCL_HOST_API void insert_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last)
   {
-    __impl->insert_async(__stream, __first, __last, ref());
+    ref().insert_async(__stream, __first, __last);
   }
 
   //! @brief Inserts each key-value pair and returns its stored mapped value and insertion status.
@@ -349,8 +349,7 @@ public:
   _CCCL_HOST_API void insert_and_find(
     ::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _FoundIt __found_begin, _InsertedIt __inserted_begin)
   {
-    insert_and_find_async(__stream, __first, __last, __found_begin, __inserted_begin);
-    __sync(__stream);
+    ref().insert_and_find(__stream, __first, __last, __found_begin, __inserted_begin);
   }
 
   //! @brief Asynchronously inserts each key-value pair and returns its stored mapped value and
@@ -380,7 +379,7 @@ public:
   _CCCL_HOST_API void insert_and_find_async(
     ::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _FoundIt __found_begin, _InsertedIt __inserted_begin)
   {
-    __impl->insert_and_find_async(__stream, __first, __last, __found_begin, __inserted_begin, ref());
+    ref().insert_and_find_async(__stream, __first, __last, __found_begin, __inserted_begin);
   }
 
   //! @brief Inserts keys in `[__first, __last)` whose stencil satisfies `__pred`.
@@ -407,7 +406,7 @@ public:
   _CCCL_HOST_API size_type
   insert_if(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _StencilIt __stencil, _Predicate __pred)
   {
-    return __impl->insert_if(__stream, __first, __last, __stencil, __pred, ref());
+    return ref().insert_if(__stream, __first, __last, __stencil, __pred, __impl->memory_resource());
   }
 
   //! @brief Asynchronously inserts keys in `[__first, __last)` whose stencil satisfies `__pred`.
@@ -429,7 +428,7 @@ public:
   _CCCL_HOST_API void insert_if_async(
     ::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _StencilIt __stencil, _Predicate __pred)
   {
-    __impl->insert_if_async(__stream, __first, __last, __stencil, __pred, ref());
+    ref().insert_if_async(__stream, __first, __last, __stencil, __pred);
   }
 
   //! @brief Inserts pairs in `[__first, __last)` or assigns their mapped values if the keys exist.
@@ -446,8 +445,7 @@ public:
   template <class _InputIt>
   _CCCL_HOST_API void insert_or_assign(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last)
   {
-    insert_or_assign_async(__stream, __first, __last);
-    __stream.sync();
+    ref().insert_or_assign(__stream, __first, __last);
   }
 
   //! @brief Asynchronously inserts pairs or assigns their mapped values if the keys exist.
@@ -463,7 +461,7 @@ public:
   template <class _InputIt>
   _CCCL_HOST_API void insert_or_assign_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last)
   {
-    __impl->insert_or_assign_async(__stream, __first, __last, ref());
+    ref().insert_or_assign_async(__stream, __first, __last);
   }
 
   // ===== Contains =====
@@ -481,10 +479,10 @@ public:
   //! @param __last End of the sequence of keys
   //! @param __output_begin Beginning of the output sequence of booleans
   template <class _InputIt, class _OutputIt>
-  void contains(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const
+  _CCCL_HOST_API void
+  contains(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const
   {
-    contains_async(__stream, __first, __last, __output_begin);
-    __sync(__stream);
+    ref().contains(__stream, __first, __last, __output_begin);
   }
 
   //! @brief Asynchronously indicates whether each key in `[__first, __last)` is contained in the map.
@@ -497,9 +495,10 @@ public:
   //! @param __last End of the sequence of keys
   //! @param __output_begin Beginning of the output sequence of booleans
   template <class _InputIt, class _OutputIt>
-  void contains_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const
+  _CCCL_HOST_API void
+  contains_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const
   {
-    __impl->contains_async(__stream, __first, __last, __output_begin, ref());
+    ref().contains_async(__stream, __first, __last, __output_begin);
   }
 
   //! @brief Indicates whether each selected key in `[__first, __last)` is contained in the map.
@@ -531,8 +530,7 @@ public:
     _Predicate __pred,
     _OutputIt __output_begin) const
   {
-    contains_if_async(__stream, __first, __last, __stencil, __pred, __output_begin);
-    __sync(__stream);
+    ref().contains_if(__stream, __first, __last, __stencil, __pred, __output_begin);
   }
 
   //! @brief Asynchronously indicates whether each selected key in `[__first, __last)` is contained
@@ -562,7 +560,7 @@ public:
     _Predicate __pred,
     _OutputIt __output_begin) const
   {
-    __impl->contains_if_async(__stream, __first, __last, __stencil, __pred, __output_begin, ref());
+    ref().contains_if_async(__stream, __first, __last, __stencil, __pred, __output_begin);
   }
 
   // ===== Find =====
@@ -580,10 +578,10 @@ public:
   //! @param __last End of the sequence of keys
   //! @param __output_begin Beginning of the output sequence of payloads
   template <class _InputIt, class _OutputIt>
-  void find(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const
+  _CCCL_HOST_API void
+  find(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const
   {
-    find_async(__stream, __first, __last, __output_begin);
-    __sync(__stream);
+    ref().find(__stream, __first, __last, __output_begin);
   }
 
   //! @brief Asynchronously, for each key in `[__first, __last)` writes the associated payload, or
@@ -597,9 +595,10 @@ public:
   //! @param __last End of the sequence of keys
   //! @param __output_begin Beginning of the output sequence of payloads
   template <class _InputIt, class _OutputIt>
-  void find_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const
+  _CCCL_HOST_API void
+  find_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const
   {
-    __impl->find_async(__stream, __first, __last, __output_begin, ref());
+    ref().find_async(__stream, __first, __last, __output_begin);
   }
 
   //! @brief For each key `__first[i]` with `__pred(__stencil[i]) == true` writes the associated payload,
@@ -620,15 +619,15 @@ public:
   //! @param __pred Predicate applied to the stencil to determine which keys to query
   //! @param __output_begin Beginning of the output sequence of payloads
   template <class _InputIt, class _StencilIt, class _Predicate, class _OutputIt>
-  void find_if(::cuda::stream_ref __stream,
-               _InputIt __first,
-               _InputIt __last,
-               _StencilIt __stencil,
-               _Predicate __pred,
-               _OutputIt __output_begin) const
+  _CCCL_HOST_API void find_if(
+    ::cuda::stream_ref __stream,
+    _InputIt __first,
+    _InputIt __last,
+    _StencilIt __stencil,
+    _Predicate __pred,
+    _OutputIt __output_begin) const
   {
-    find_if_async(__stream, __first, __last, __stencil, __pred, __output_begin);
-    __sync(__stream);
+    ref().find_if(__stream, __first, __last, __stencil, __pred, __output_begin);
   }
 
   //! @brief Asynchronous version of `find_if`.
@@ -646,7 +645,7 @@ public:
   //! @param __pred Predicate applied to the stencil to determine which keys to query
   //! @param __output_begin Beginning of the output sequence of payloads
   template <class _InputIt, class _StencilIt, class _Predicate, class _OutputIt>
-  void find_if_async(
+  _CCCL_HOST_API void find_if_async(
     ::cuda::stream_ref __stream,
     _InputIt __first,
     _InputIt __last,
@@ -654,7 +653,7 @@ public:
     _Predicate __pred,
     _OutputIt __output_begin) const
   {
-    __impl->find_if_async(__stream, __first, __last, __stencil, __pred, __output_begin, ref());
+    ref().find_if_async(__stream, __first, __last, __stencil, __pred, __output_begin);
   }
 
   // ===== For Each =====
@@ -680,8 +679,7 @@ public:
   _CCCL_HOST_API void
   for_each(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _CallbackOp __callback_op) const
   {
-    for_each_async(__stream, __first, __last, __callback_op);
-    __sync(__stream);
+    ref().for_each(__stream, __first, __last, __callback_op);
   }
 
   //! @brief Asynchronous version of `for_each`.
@@ -703,7 +701,7 @@ public:
   _CCCL_HOST_API void
   for_each_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _CallbackOp __callback_op) const
   {
-    __impl->for_each_async(__stream, __first, __last, __callback_op, ref());
+    ref().for_each_async(__stream, __first, __last, __callback_op);
   }
 
   // ===== Retrieve All =====
@@ -729,11 +727,7 @@ public:
   [[nodiscard]] _CCCL_HOST_API ::cuda::std::pair<_KeyOutputIt, _ValueOutputIt>
   retrieve_all(::cuda::stream_ref __stream, _KeyOutputIt __keys_out, _ValueOutputIt __values_out) const
   {
-    const auto __zipped_out_begin = ::cuda::make_zip_iterator(__keys_out, __values_out);
-    const auto __zipped_out_end   = __impl->retrieve_all(__stream, __zipped_out_begin);
-    const auto __num_out          = __zipped_out_end - __zipped_out_begin;
-
-    return {__keys_out + __num_out, __values_out + __num_out};
+    return ref().retrieve_all(__stream, __keys_out, __values_out, __impl->memory_resource());
   }
 
   // ===== Rehash =====
@@ -810,7 +804,7 @@ public:
   //! @return The number of elements in the map
   [[nodiscard]] _CCCL_HOST_API size_type size(::cuda::stream_ref __stream) const
   {
-    return __impl->size(__stream);
+    return ref().size(__stream, __impl->memory_resource());
   }
 
   //! @brief Returns the total number of slots the map can hold (the prime/stride-adjusted capacity).
@@ -873,6 +867,7 @@ public:
   //!
   //! The returned ref borrows the map's slot storage and sentinel values and is trivially copyable
   //! — safe to pass by value to kernels. The ref's lifetime must not exceed the map's lifetime.
+  //! Rehashing invalidates previously obtained refs; obtain a new ref after rehashing.
   //!
   //! @return A `ref_type` referring to this map
   [[nodiscard]] auto ref() const noexcept -> ref_type

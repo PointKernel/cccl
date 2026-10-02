@@ -40,14 +40,26 @@
 
 #include <cooperative_groups.h>
 
+#if _CCCL_CUDA_COMPILATION() && !_CCCL_COMPILER(NVRTC)
+#  include <cuda/__iterator/zip_iterator.h>
+
+#  include <cuda/experimental/__cuco/detail/open_addressing/bulk_operations.cuh>
+#endif
+
 #include <cuda/std/__cccl/prologue.h>
 
 namespace cuda::experimental::cuco
 {
-//! @brief Device non-owning reference type for `fixed_capacity_map`.
+//! @brief Non-owning reference type for `fixed_capacity_map` with host bulk and device operations.
 //!
 //! This lightweight, trivially-copyable reference is intended to be passed by value to device code
-//! for performing insert and lookup operations on the hash map.
+//! for performing insert and lookup operations on the hash map. Host bulk operations act on the
+//! same storage and do not take ownership of it. Operations requiring temporary device storage
+//! accept a memory resource as their final argument.
+//!
+//! @pre Host bulk operations require storage accessible to all launched device threads, with a
+//! thread scope suitable for those threads. Block shared-memory refs support device operations
+//! only. Storage must remain valid until all operations using the ref have completed.
 //!
 //! @note Concurrent modify and lookup on the same map are not supported: lookups perform non-atomic
 //! loads, so a lookup must not run concurrently with an insert (doing so is a data race).
@@ -330,6 +342,516 @@ public:
 
 #if _CCCL_CUDA_COMPILATION()
   // ===== Storage operations =====
+
+#  if _CCCL_CUDA_COMPILATION() && !_CCCL_COMPILER(NVRTC)
+
+  // ===== Clear =====
+
+  //! @brief Erases all elements from the container. After this call, `size(stream, mr)` returns zero.
+  //!
+  //! @param __stream CUDA stream this operation is executed in
+  _CCCL_HOST_API void clear(::cuda::stream_ref __stream) const
+  {
+    __open_addressing::__clear_async(__stream, storage_span(), value_type{empty_key_sentinel(), empty_value_sentinel()});
+    __stream.sync();
+  }
+
+  //! @brief Asynchronously erases all elements from the container. After this call, `size(stream, mr)`
+  //! returns zero.
+  //!
+  //! @param __stream CUDA stream this operation is executed in
+  _CCCL_HOST_API void clear_async(::cuda::stream_ref __stream) const
+  {
+    __open_addressing::__clear_async(__stream, storage_span(), value_type{empty_key_sentinel(), empty_value_sentinel()});
+  }
+
+  // ===== Insert =====
+
+  //! @brief Inserts all keys in the range `[__first, __last)` and returns the number of successful
+  //! insertions.
+  //!
+  //! @note This function synchronizes the given stream. For asynchronous execution use
+  //! `insert_async`.
+  //!
+  //! @tparam _InputIt Device accessible random access input iterator whose `value_type` is
+  //! convertible to the map's `value_type`
+  //!
+  //! @param __stream CUDA stream used for insert
+  //! @param __first Beginning of the sequence of keys
+  //! @param __last End of the sequence of keys
+  //! @param __mr Memory resource used for temporary device storage
+  //!
+  //! @return Number of successful insertions
+  template <class _InputIt, class _MemoryResource>
+  _CCCL_HOST_API size_type
+  insert(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _MemoryResource __mr) const
+  {
+    return __open_addressing::__insert(__stream, __first, __last, *this, __mr);
+  }
+
+  //! @brief Asynchronously inserts all keys in the range `[__first, __last)`.
+  //!
+  //! @tparam _InputIt Device accessible random access input iterator whose `value_type` is
+  //! convertible to the map's `value_type`
+  //!
+  //! @param __stream CUDA stream used for insert
+  //! @param __first Beginning of the sequence of keys
+  //! @param __last End of the sequence of keys
+  template <class _InputIt>
+  _CCCL_HOST_API void insert_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last) const
+  {
+    __open_addressing::__insert_async(__stream, __first, __last, *this);
+  }
+
+  //! @brief Inserts each key-value pair and returns its stored mapped value and insertion status.
+  //!
+  //! For each input pair, writes the stored mapped value and `true` when the pair is inserted. If
+  //! an equivalent key is already present, leaves the existing pair unchanged, writes its mapped
+  //! value, and writes `false`. If no slot is available, writes `empty_value_sentinel()` and
+  //! `false`.
+  //!
+  //! @note This function synchronizes the given stream. For asynchronous execution use
+  //! `insert_and_find_async`.
+  //! @note If multiple input pairs have equivalent keys, it is unspecified which pair is inserted.
+  //! @pre Input and stored mapped values must not equal `empty_value_sentinel()`.
+  //! @pre Concurrent operations on this map must also use `insert_and_find` or `insert_and_find_async`.
+  //! @throws cuda_error if the operation fails to launch or stream synchronization fails
+  //!
+  //! @tparam _InputIt Device accessible random access input iterator whose value type is
+  //! convertible to the map's `value_type`
+  //! @tparam _FoundIt Device accessible random access output iterator assignable from `mapped_type`
+  //! @tparam _InsertedIt Device accessible random access output iterator assignable from `bool`
+  //!
+  //! @param[in] __stream CUDA stream used for insert
+  //! @param[in] __first Beginning of the sequence of key-value pairs
+  //! @param[in] __last End of the sequence of key-value pairs
+  //! @param[out] __found_begin Beginning of the mapped-value output sequence
+  //! @param[out] __inserted_begin Beginning of the insertion-status output sequence
+  template <class _InputIt, class _FoundIt, class _InsertedIt>
+  _CCCL_HOST_API void insert_and_find(
+    ::cuda::stream_ref __stream,
+    _InputIt __first,
+    _InputIt __last,
+    _FoundIt __found_begin,
+    _InsertedIt __inserted_begin) const
+  {
+    insert_and_find_async(__stream, __first, __last, __found_begin, __inserted_begin);
+    __stream.sync();
+  }
+
+  //! @brief Asynchronously inserts each key-value pair and returns its stored mapped value and
+  //! insertion status.
+  //!
+  //! For each input pair, writes the stored mapped value and `true` when the pair is inserted. If
+  //! an equivalent key is already present, leaves the existing pair unchanged, writes its mapped
+  //! value, and writes `false`. If no slot is available, writes `empty_value_sentinel()` and
+  //! `false`.
+  //!
+  //! @note If multiple input pairs have equivalent keys, it is unspecified which pair is inserted.
+  //! @pre Input and stored mapped values must not equal `empty_value_sentinel()`.
+  //! @pre Concurrent operations on this map must also use `insert_and_find` or `insert_and_find_async`.
+  //! @throws cuda_error if the operation fails to launch
+  //!
+  //! @tparam _InputIt Device accessible random access input iterator whose value type is
+  //! convertible to the map's `value_type`
+  //! @tparam _FoundIt Device accessible random access output iterator assignable from `mapped_type`
+  //! @tparam _InsertedIt Device accessible random access output iterator assignable from `bool`
+  //!
+  //! @param[in] __stream CUDA stream used for insert
+  //! @param[in] __first Beginning of the sequence of key-value pairs
+  //! @param[in] __last End of the sequence of key-value pairs
+  //! @param[out] __found_begin Beginning of the mapped-value output sequence
+  //! @param[out] __inserted_begin Beginning of the insertion-status output sequence
+  template <class _InputIt, class _FoundIt, class _InsertedIt>
+  _CCCL_HOST_API void insert_and_find_async(
+    ::cuda::stream_ref __stream,
+    _InputIt __first,
+    _InputIt __last,
+    _FoundIt __found_begin,
+    _InsertedIt __inserted_begin) const
+  {
+    __open_addressing::__insert_and_find_async(__stream, __first, __last, __found_begin, __inserted_begin, *this);
+  }
+
+  //! @brief Inserts keys in `[__first, __last)` whose stencil satisfies `__pred`.
+  //!
+  //! The key-value pair `__first[i]` is inserted when `__pred(__stencil[i])` is true.
+  //!
+  //! @note This function synchronizes the given stream. For asynchronous execution use
+  //! `insert_if_async`.
+  //!
+  //! @tparam _InputIt Device accessible random access input iterator whose value type is
+  //! convertible to the map's `value_type`
+  //! @tparam _StencilIt Device accessible random access iterator whose value type is convertible to
+  //! `_Predicate`'s argument type
+  //! @tparam _Predicate Unary callable returning a value convertible to `bool`
+  //!
+  //! @param __stream CUDA stream used for insert
+  //! @param __first Beginning of the sequence of key-value pairs
+  //! @param __last End of the sequence of key-value pairs
+  //! @param __stencil Beginning of the stencil sequence
+  //! @param __pred Predicate applied to the stencil to determine which elements to insert
+  //! @param __mr Memory resource used for temporary device storage
+  //!
+  //! @return Number of successful insertions
+  template <class _InputIt, class _StencilIt, class _Predicate, class _MemoryResource>
+  _CCCL_HOST_API size_type insert_if(
+    ::cuda::stream_ref __stream,
+    _InputIt __first,
+    _InputIt __last,
+    _StencilIt __stencil,
+    _Predicate __pred,
+    _MemoryResource __mr) const
+  {
+    return __open_addressing::__insert_if(__stream, __first, __last, __stencil, __pred, *this, __mr);
+  }
+
+  //! @brief Asynchronously inserts keys in `[__first, __last)` whose stencil satisfies `__pred`.
+  //!
+  //! The key-value pair `__first[i]` is inserted when `__pred(__stencil[i])` is true.
+  //!
+  //! @tparam _InputIt Device accessible random access input iterator whose value type is
+  //! convertible to the map's `value_type`
+  //! @tparam _StencilIt Device accessible random access iterator whose value type is convertible to
+  //! `_Predicate`'s argument type
+  //! @tparam _Predicate Unary callable returning a value convertible to `bool`
+  //!
+  //! @param __stream CUDA stream used for insert
+  //! @param __first Beginning of the sequence of key-value pairs
+  //! @param __last End of the sequence of key-value pairs
+  //! @param __stencil Beginning of the stencil sequence
+  //! @param __pred Predicate applied to the stencil to determine which elements to insert
+  template <class _InputIt, class _StencilIt, class _Predicate>
+  _CCCL_HOST_API void insert_if_async(
+    ::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _StencilIt __stencil, _Predicate __pred) const
+  {
+    __open_addressing::__insert_if_async(__stream, __first, __last, __stencil, __pred, *this);
+  }
+
+  //! @brief Inserts pairs in `[__first, __last)` or assigns their mapped values if the keys exist.
+  //!
+  //! @note This function synchronizes the given stream. For asynchronous execution use `insert_or_assign_async`.
+  //! @note If multiple input pairs have equivalent keys, the final mapped value is unspecified.
+  //!
+  //! @tparam _InputIt Device accessible random access iterator with values convertible to `value_type`
+  //! @param[in] __stream CUDA stream used for insert or assign
+  //! @param[in] __first Beginning of the sequence of key-value pairs
+  //! @param[in] __last End of the sequence of key-value pairs
+  //!
+  //! @throws cuda_error if the operation fails
+  template <class _InputIt>
+  _CCCL_HOST_API void insert_or_assign(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last) const
+  {
+    insert_or_assign_async(__stream, __first, __last);
+    __stream.sync();
+  }
+
+  //! @brief Asynchronously inserts pairs or assigns their mapped values if the keys exist.
+  //!
+  //! @note If multiple input pairs have equivalent keys, the final mapped value is unspecified.
+  //!
+  //! @tparam _InputIt Device accessible random access iterator with values convertible to `value_type`
+  //! @param[in] __stream CUDA stream used for insert or assign
+  //! @param[in] __first Beginning of the sequence of key-value pairs
+  //! @param[in] __last End of the sequence of key-value pairs
+  //!
+  //! @throws cuda_error if the operation fails
+  template <class _InputIt>
+  _CCCL_HOST_API void insert_or_assign_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last) const
+  {
+    __open_addressing::__insert_or_assign_async(__stream, __first, __last, *this);
+  }
+
+  // ===== Contains =====
+
+  //! @brief Indicates whether each key in `[__first, __last)` is contained in the map.
+  //!
+  //! @note This function synchronizes the given stream. For asynchronous execution use
+  //! `contains_async`.
+  //!
+  //! @tparam _InputIt Device accessible input iterator
+  //! @tparam _OutputIt Device accessible output iterator assignable from `bool`
+  //!
+  //! @param __stream CUDA stream used for executing the kernels
+  //! @param __first Beginning of the sequence of keys
+  //! @param __last End of the sequence of keys
+  //! @param __output_begin Beginning of the output sequence of booleans
+  template <class _InputIt, class _OutputIt>
+  _CCCL_HOST_API void
+  contains(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const
+  {
+    contains_async(__stream, __first, __last, __output_begin);
+    __stream.sync();
+  }
+
+  //! @brief Asynchronously indicates whether each key in `[__first, __last)` is contained in the map.
+  //!
+  //! @tparam _InputIt Device accessible input iterator
+  //! @tparam _OutputIt Device accessible output iterator assignable from `bool`
+  //!
+  //! @param __stream CUDA stream used for executing the kernels
+  //! @param __first Beginning of the sequence of keys
+  //! @param __last End of the sequence of keys
+  //! @param __output_begin Beginning of the output sequence of booleans
+  template <class _InputIt, class _OutputIt>
+  _CCCL_HOST_API void
+  contains_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const
+  {
+    __open_addressing::__contains_async(__stream, __first, __last, __output_begin, *this);
+  }
+
+  //! @brief Indicates whether each selected key in `[__first, __last)` is contained in the map.
+  //!
+  //! For each key `__first[i]`, writes whether the key is present when `__pred(__stencil[i])` is
+  //! true; otherwise writes false.
+  //!
+  //! @note This function synchronizes the given stream. For asynchronous execution use
+  //! `contains_if_async`.
+  //!
+  //! @tparam _InputIt Device accessible random access input iterator
+  //! @tparam _StencilIt Device accessible random access iterator whose value type is convertible to
+  //! `_Predicate`'s argument type
+  //! @tparam _Predicate Unary callable returning a value convertible to `bool`
+  //! @tparam _OutputIt Device accessible random access output iterator assignable from `bool`
+  //!
+  //! @param __stream CUDA stream used for executing the kernels
+  //! @param __first Beginning of the sequence of keys
+  //! @param __last End of the sequence of keys
+  //! @param __stencil Beginning of the stencil sequence
+  //! @param __pred Predicate applied to the stencil to determine which keys to query
+  //! @param __output_begin Beginning of the output sequence of booleans
+  template <class _InputIt, class _StencilIt, class _Predicate, class _OutputIt>
+  _CCCL_HOST_API void contains_if(
+    ::cuda::stream_ref __stream,
+    _InputIt __first,
+    _InputIt __last,
+    _StencilIt __stencil,
+    _Predicate __pred,
+    _OutputIt __output_begin) const
+  {
+    contains_if_async(__stream, __first, __last, __stencil, __pred, __output_begin);
+    __stream.sync();
+  }
+
+  //! @brief Asynchronously indicates whether each selected key in `[__first, __last)` is contained
+  //! in the map.
+  //!
+  //! For each key `__first[i]`, writes whether the key is present when `__pred(__stencil[i])` is
+  //! true; otherwise writes false.
+  //!
+  //! @tparam _InputIt Device accessible random access input iterator
+  //! @tparam _StencilIt Device accessible random access iterator whose value type is convertible to
+  //! `_Predicate`'s argument type
+  //! @tparam _Predicate Unary callable returning a value convertible to `bool`
+  //! @tparam _OutputIt Device accessible random access output iterator assignable from `bool`
+  //!
+  //! @param __stream CUDA stream used for executing the kernels
+  //! @param __first Beginning of the sequence of keys
+  //! @param __last End of the sequence of keys
+  //! @param __stencil Beginning of the stencil sequence
+  //! @param __pred Predicate applied to the stencil to determine which keys to query
+  //! @param __output_begin Beginning of the output sequence of booleans
+  template <class _InputIt, class _StencilIt, class _Predicate, class _OutputIt>
+  _CCCL_HOST_API void contains_if_async(
+    ::cuda::stream_ref __stream,
+    _InputIt __first,
+    _InputIt __last,
+    _StencilIt __stencil,
+    _Predicate __pred,
+    _OutputIt __output_begin) const
+  {
+    __open_addressing::__contains_if_async(__stream, __first, __last, __stencil, __pred, __output_begin, *this);
+  }
+
+  // ===== Find =====
+
+  //! @brief For each key in `[__first, __last)` writes the associated payload, or `empty_value_sentinel()`
+  //! if the key is not present.
+  //!
+  //! @note This function synchronizes the given stream. For asynchronous execution use `find_async`.
+  //!
+  //! @tparam _InputIt Device accessible input iterator
+  //! @tparam _OutputIt Device accessible output iterator assignable from `mapped_type`
+  //!
+  //! @param __stream CUDA stream used for executing the kernels
+  //! @param __first Beginning of the sequence of keys
+  //! @param __last End of the sequence of keys
+  //! @param __output_begin Beginning of the output sequence of payloads
+  template <class _InputIt, class _OutputIt>
+  _CCCL_HOST_API void
+  find(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const
+  {
+    find_async(__stream, __first, __last, __output_begin);
+    __stream.sync();
+  }
+
+  //! @brief Asynchronously, for each key in `[__first, __last)` writes the associated payload, or
+  //! `empty_value_sentinel()` if the key is not present.
+  //!
+  //! @tparam _InputIt Device accessible input iterator
+  //! @tparam _OutputIt Device accessible output iterator assignable from `mapped_type`
+  //!
+  //! @param __stream CUDA stream used for executing the kernels
+  //! @param __first Beginning of the sequence of keys
+  //! @param __last End of the sequence of keys
+  //! @param __output_begin Beginning of the output sequence of payloads
+  template <class _InputIt, class _OutputIt>
+  _CCCL_HOST_API void
+  find_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _OutputIt __output_begin) const
+  {
+    __open_addressing::__find_async(__stream, __first, __last, __output_begin, *this);
+  }
+
+  //! @brief For each key `__first[i]` with `__pred(__stencil[i]) == true` writes the associated payload,
+  //! or `empty_value_sentinel()` if the key is not present; writes `empty_value_sentinel()` for the rest.
+  //!
+  //! @note This function synchronizes the given stream. For asynchronous execution use `find_if_async`.
+  //!
+  //! @tparam _InputIt Device accessible input iterator
+  //! @tparam _StencilIt Device accessible random access iterator whose value type is convertible to
+  //!         `_Predicate`'s argument type
+  //! @tparam _Predicate Unary callable returning `bool`
+  //! @tparam _OutputIt Device accessible output iterator assignable from `mapped_type`
+  //!
+  //! @param __stream CUDA stream used for executing the kernels
+  //! @param __first Beginning of the sequence of keys
+  //! @param __last End of the sequence of keys
+  //! @param __stencil Beginning of the stencil sequence
+  //! @param __pred Predicate applied to the stencil to determine which keys to query
+  //! @param __output_begin Beginning of the output sequence of payloads
+  template <class _InputIt, class _StencilIt, class _Predicate, class _OutputIt>
+  _CCCL_HOST_API void find_if(
+    ::cuda::stream_ref __stream,
+    _InputIt __first,
+    _InputIt __last,
+    _StencilIt __stencil,
+    _Predicate __pred,
+    _OutputIt __output_begin) const
+  {
+    find_if_async(__stream, __first, __last, __stencil, __pred, __output_begin);
+    __stream.sync();
+  }
+
+  //! @brief Asynchronous version of `find_if`.
+  //!
+  //! @tparam _InputIt Device accessible input iterator
+  //! @tparam _StencilIt Device accessible random access iterator whose value type is convertible to
+  //!         `_Predicate`'s argument type
+  //! @tparam _Predicate Unary callable returning `bool`
+  //! @tparam _OutputIt Device accessible output iterator assignable from `mapped_type`
+  //!
+  //! @param __stream CUDA stream used for executing the kernels
+  //! @param __first Beginning of the sequence of keys
+  //! @param __last End of the sequence of keys
+  //! @param __stencil Beginning of the stencil sequence
+  //! @param __pred Predicate applied to the stencil to determine which keys to query
+  //! @param __output_begin Beginning of the output sequence of payloads
+  template <class _InputIt, class _StencilIt, class _Predicate, class _OutputIt>
+  _CCCL_HOST_API void find_if_async(
+    ::cuda::stream_ref __stream,
+    _InputIt __first,
+    _InputIt __last,
+    _StencilIt __stencil,
+    _Predicate __pred,
+    _OutputIt __output_begin) const
+  {
+    __open_addressing::__find_if_async(__stream, __first, __last, __stencil, __pred, __output_begin, *this);
+  }
+
+  // ===== For Each =====
+
+  //! @brief Applies `__callback_op` to a copy of every element whose key is equivalent to a key in
+  //! `[__first, __last)`.
+  //!
+  //! @note This function synchronizes the given stream. For asynchronous execution use `for_each_async`.
+  //! @note Keys in `[__first, __last)` that are not present in the map contribute no callback invocation.
+  //! @note The callback is invoked with a copy of the matching slot, so mutating its argument does
+  //! not modify the map.
+  //! @note The return value of `__callback_op`, if any, is ignored.
+  //! @note The order in which matches are visited is implementation-defined.
+  //!
+  //! @tparam _InputIt Device accessible input iterator
+  //! @tparam _CallbackOp Unary callable invocable with `value_type`
+  //!
+  //! @param __stream CUDA stream used for executing the kernels
+  //! @param __first Beginning of the sequence of keys
+  //! @param __last End of the sequence of keys
+  //! @param __callback_op Function to apply to every matching element
+  template <class _InputIt, class _CallbackOp>
+  _CCCL_HOST_API void
+  for_each(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _CallbackOp __callback_op) const
+  {
+    for_each_async(__stream, __first, __last, __callback_op);
+    __stream.sync();
+  }
+
+  //! @brief Asynchronous version of `for_each`.
+  //!
+  //! @note Keys in `[__first, __last)` that are not present in the map contribute no callback invocation.
+  //! @note The callback is invoked with a copy of the matching slot, so mutating its argument does
+  //! not modify the map.
+  //! @note The return value of `__callback_op`, if any, is ignored.
+  //! @note The order in which matches are visited is implementation-defined.
+  //!
+  //! @tparam _InputIt Device accessible input iterator
+  //! @tparam _CallbackOp Unary callable invocable with `value_type`
+  //!
+  //! @param __stream CUDA stream used for executing the kernels
+  //! @param __first Beginning of the sequence of keys
+  //! @param __last End of the sequence of keys
+  //! @param __callback_op Function to apply to every matching element
+  template <class _InputIt, class _CallbackOp>
+  _CCCL_HOST_API void
+  for_each_async(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _CallbackOp __callback_op) const
+  {
+    __open_addressing::__for_each_async(__stream, __first, __last, __callback_op, *this);
+  }
+
+  // ===== Retrieve All =====
+
+  //! @brief Retrieves all keys and their associated mapped values.
+  //!
+  //! @note This function synchronizes the given stream.
+  //! @note The output order is implementation-defined and may differ between calls.
+  //! @note Behavior is undefined if either output range is smaller than the number of elements in
+  //! the map.
+  //!
+  //! @tparam _KeyOutputIt Device-accessible random access output iterator assignable from
+  //! `key_type`
+  //! @tparam _ValueOutputIt Device-accessible random access output iterator assignable from
+  //! `mapped_type`
+  //!
+  //! @param __stream CUDA stream used for this operation
+  //! @param __keys_out Beginning of the key output range
+  //! @param __values_out Beginning of the mapped-value output range
+  //! @param __mr Memory resource used for temporary device storage
+  //!
+  //! @return Pair of iterators indicating the ends of the output ranges
+  template <class _KeyOutputIt, class _ValueOutputIt, class _MemoryResource>
+  [[nodiscard]] _CCCL_HOST_API ::cuda::std::pair<_KeyOutputIt, _ValueOutputIt> retrieve_all(
+    ::cuda::stream_ref __stream, _KeyOutputIt __keys_out, _ValueOutputIt __values_out, _MemoryResource __mr) const
+  {
+    const auto __zipped_out_begin = ::cuda::make_zip_iterator(__keys_out, __values_out);
+    const auto __zipped_out_end   = __open_addressing::__retrieve_all(__stream, __zipped_out_begin, *this, __mr);
+    const auto __num_out          = __zipped_out_end - __zipped_out_begin;
+    return {__keys_out + __num_out, __values_out + __num_out};
+  }
+
+  //! @brief Gets the number of elements in the map.
+  //!
+  //! @note This function synchronizes the given stream.
+  //!
+  //! @param __stream CUDA stream used to get the number of elements
+  //! @param __mr Memory resource used for temporary device storage
+  //!
+  //! @return The number of elements in the map
+  template <class _MemoryResource>
+  [[nodiscard]] _CCCL_HOST_API size_type size(::cuda::stream_ref __stream, _MemoryResource __mr) const
+  {
+    return __open_addressing::__size(__stream, *this, __mr);
+  }
+
+#  endif // _CCCL_CUDA_COMPILATION() && !_CCCL_COMPILER(NVRTC)
 
   //! @brief Cooperatively initializes the map's slot storage with the empty slot sentinel.
   //!

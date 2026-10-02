@@ -36,6 +36,10 @@ cudax_add_catch2_test(test_target cuco.fixed_capacity_map.rebind ${cudax_target}
   test_rebind.cu
 )
 
+cudax_add_catch2_test(test_target cuco.fixed_capacity_map.ref_host ${cudax_target}
+  test_ref_host.cu
+)
+
 cudax_add_catch2_test(test_target cuco.fixed_capacity_map.retrieve_all ${cudax_target}
   test_retrieve_all.cu
 )
