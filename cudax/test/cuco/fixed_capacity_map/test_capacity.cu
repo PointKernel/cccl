@@ -15,7 +15,6 @@
 #include <cuda/stream>
 
 #include <cuda/experimental/__cuco/capacity.cuh>
-#include <cuda/experimental/__cuco/detail/open_addressing/open_addressing_impl.cuh>
 #include <cuda/experimental/__cuco/fixed_capacity_map.cuh>
 
 #include <testing.cuh>
@@ -29,19 +28,11 @@ C2H_TEST("fixed_capacity_map dynamic capacity — capacity() reflects the valid 
 {
   constexpr ::cuda::std::size_t requested = 1000;
   using dyn_map_t                         = cudax::cuco::fixed_capacity_map<int, int>;
-  using impl_type                         = cudax::cuco::__open_addressing::__open_addressing_impl<
-    dyn_map_t::key_type,
-    dyn_map_t::value_type,
-    dyn_map_t::thread_scope,
-    dyn_map_t::key_equal,
-    dyn_map_t::probing_scheme_type,
-    dyn_map_t::bucket_size,
-    cuda::device_memory_pool_ref>;
 
-  static_assert(cuda::std::is_copy_constructible_v<impl_type>);
-  static_assert(!cuda::std::is_copy_assignable_v<impl_type>);
-  static_assert(cuda::std::is_nothrow_move_constructible_v<impl_type>);
-  static_assert(cuda::std::is_nothrow_move_assignable_v<impl_type>);
+  static_assert(!cuda::std::is_copy_constructible_v<dyn_map_t>);
+  static_assert(!cuda::std::is_copy_assignable_v<dyn_map_t>);
+  static_assert(cuda::std::is_nothrow_move_constructible_v<dyn_map_t>);
+  static_assert(cuda::std::is_nothrow_move_assignable_v<dyn_map_t>);
 
   static_assert(dyn_map_t::capacity_v == ::cuda::std::dynamic_extent,
                 "capacity_v must be dynamic_extent for dynamic-capacity maps");
@@ -100,4 +91,63 @@ C2H_TEST("fixed_capacity_map dynamic extent — load factor constructor", "[capa
 
   // With load_factor = 0.5 and 500 elements, capacity should be >= 1000
   REQUIRE(map.capacity() >= static_cast<::cuda::std::size_t>(num_elements / load_factor));
+}
+
+struct custom_key
+{
+  int value;
+};
+
+// This key deliberately has no operator==; equality is supplied by custom_key_equal.
+CUDAX_CUCO_DECLARE_BITWISE_COMPARABLE(custom_key);
+
+struct custom_key_equal
+{
+  __host__ __device__ bool operator()(custom_key lhs, custom_key rhs) const noexcept
+  {
+    return lhs.value == rhs.value;
+  }
+};
+
+struct custom_key_hash
+{
+  __host__ __device__ auto operator()(custom_key key) const noexcept
+  {
+    return ::cuda::hash<int>{}(key.value);
+  }
+};
+
+C2H_TEST("fixed_capacity_map no-erasure constructors accept keys without operator==", "[capacity][constructor]")
+{
+  using probing_type = cudax::cuco::linear_probing<1, custom_key_hash>;
+  using dynamic_map  = cudax::cuco::fixed_capacity_map<
+    custom_key,
+    int,
+    ::cuda::std::dynamic_extent,
+    ::cuda::thread_scope_device,
+    custom_key_equal,
+    probing_type>;
+  constexpr auto capacity = cudax::cuco::make_valid_capacity<probing_type, 1>(::cuda::std::size_t{128});
+  using static_map        = cudax::cuco::
+    fixed_capacity_map<custom_key, int, capacity, ::cuda::thread_scope_device, custom_key_equal, probing_type>;
+  const ::cuda::stream stream{::cuda::device_ref{0}};
+  const auto mr             = ::cuda::device_default_memory_pool(stream.device());
+  const auto key_sentinel   = cudax::cuco::empty_key{custom_key{-1}};
+  const auto value_sentinel = cudax::cuco::empty_value{-1};
+
+  SECTION("dynamic capacity")
+  {
+    const dynamic_map map{stream, mr, ::cuda::std::size_t{128}, key_sentinel, value_sentinel};
+    REQUIRE(map.size(stream) == 0);
+  }
+  SECTION("load factor")
+  {
+    const dynamic_map map{stream, mr, ::cuda::std::size_t{64}, 0.5, key_sentinel, value_sentinel};
+    REQUIRE(map.size(stream) == 0);
+  }
+  SECTION("static capacity")
+  {
+    const static_map map{stream, mr, key_sentinel, value_sentinel};
+    REQUIRE(map.size(stream) == 0);
+  }
 }

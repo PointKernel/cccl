@@ -13,7 +13,6 @@
 #  pragma nv_diag_suppress 20011
 #endif
 
-// Include the ref first to exercise it independently of the owning container's headers.
 #include <cuda/atomic>
 #include <cuda/buffer>
 #include <cuda/functional>
@@ -22,6 +21,7 @@
 #include <cuda/std/cstddef>
 #include <cuda/std/functional>
 #include <cuda/std/type_traits>
+#include <cuda/std/utility>
 #include <cuda/stream>
 
 #include <cuda/experimental/__cuco/capacity.cuh>
@@ -311,4 +311,106 @@ C2H_TEST("fixed_capacity_map owner and ref share host operations after rehash", 
   });
   ref.clear_async(stream);
   REQUIRE(map.size(stream) == 0);
+}
+
+struct modulo_equal
+{
+  int modulus = 1024;
+
+  __host__ __device__ bool operator()(int lhs, int rhs) const noexcept
+  {
+    return lhs % modulus == rhs % modulus;
+  }
+};
+
+struct modulo_hash
+{
+  int modulus   = 1024;
+  unsigned seed = 0;
+
+  __host__ __device__ unsigned operator()(int key) const noexcept
+  {
+    return static_cast<unsigned>(key % modulus) * 2654435761u + seed;
+  }
+};
+
+C2H_TEST("fixed_capacity_map moves preserve storage and stateful policies", "[container][ref][move]")
+{
+  using probing_type = cudax::cuco::linear_probing<4, modulo_hash>;
+  using map_type     = cudax::cuco::
+    fixed_capacity_map<int, int, ::cuda::std::dynamic_extent, ::cuda::thread_scope_device, modulo_equal, probing_type>;
+  using value_type        = typename map_type::value_type;
+  constexpr int num_keys  = 32;
+  constexpr int modulus   = 128;
+  constexpr unsigned seed = 17;
+  const ::cuda::stream stream{::cuda::device_ref{0}};
+  const auto mr                = ::cuda::device_default_memory_pool(stream.device());
+  const auto keys              = ::cuda::counting_iterator<int>{0};
+  const auto pairs             = ::cuda::transform_iterator{keys, iota_pair<value_type>{7}};
+  auto found                   = ::cuda::make_buffer<int>(stream, mr, num_keys, 0);
+  value_type* original_storage = nullptr;
+
+  auto moved = [&] {
+    map_type source{
+      stream,
+      mr,
+      ::cuda::std::size_t{256},
+      cudax::cuco::empty_key{-1},
+      cudax::cuco::empty_value{-3},
+      cudax::cuco::erased_key{-2},
+      modulo_equal{modulus},
+      probing_type{modulo_hash{modulus, seed}}};
+    REQUIRE(source.insert(stream, pairs, pairs + num_keys) == num_keys);
+    original_storage = source.data();
+    // Force move construction and destroy the source before checking the transferred storage.
+    return map_type{::cuda::std::move(source)};
+  }();
+  REQUIRE(moved.data() == original_storage);
+  moved.ref().find(stream, keys + modulus, keys + modulus + num_keys, found.begin());
+  require_values(stream, found, [](int i) {
+    return i + 7;
+  });
+
+  map_type destination{
+    stream,
+    mr,
+    ::cuda::std::size_t{64},
+    cudax::cuco::empty_key{-4},
+    cudax::cuco::empty_value{-5},
+    cudax::cuco::erased_key{-6},
+    modulo_equal{64},
+    probing_type{modulo_hash{64, 3}}};
+  REQUIRE(destination.insert(stream, pairs + 40, pairs + 48) == 8);
+  {
+    auto source = ::cuda::std::move(moved);
+    destination = ::cuda::std::move(source);
+  }
+  REQUIRE(destination.data() == original_storage);
+  REQUIRE(destination.size(stream) == num_keys);
+  REQUIRE(destination.empty_key_sentinel() == -1);
+  REQUIRE(destination.empty_value_sentinel() == -3);
+  REQUIRE(destination.erased_key_sentinel() == -2);
+  REQUIRE(destination.key_eq().modulus == modulus);
+  REQUIRE(destination.hash_function().modulus == modulus);
+  REQUIRE(destination.hash_function().seed == seed);
+  destination.find(stream, keys + modulus, keys + modulus + num_keys, found.begin());
+  require_values(stream, found, [](int i) {
+    return i + 7;
+  });
+
+  destination.rehash(stream, ::cuda::std::size_t{512});
+  const auto ref = destination.ref();
+  REQUIRE(ref.size(stream, mr) == num_keys);
+  REQUIRE(ref.key_eq().modulus == modulus);
+  REQUIRE(ref.hash_function().seed == seed);
+  ref.find(stream, keys + modulus, keys + modulus + num_keys, found.begin());
+  require_values(stream, found, [](int i) {
+    return i + 7;
+  });
+  REQUIRE(ref.insert(stream, pairs + modulus, pairs + modulus + num_keys, mr) == 0);
+  ref.clear(stream);
+  ref.find(stream, keys, keys + num_keys, found.begin());
+  require_values(stream, found, [](int) {
+    return -3;
+  });
 }

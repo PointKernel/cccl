@@ -23,19 +23,27 @@
 
 #if _CCCL_CUDA_COMPILATION() && !_CCCL_COMPILER(NVRTC)
 
+#  include <cuda/__container/buffer.h>
 #  include <cuda/__functional/hash.h>
-#  include <cuda/__iterator/zip_iterator.h>
+#  include <cuda/__hierarchy/level_dimensions.h>
+#  include <cuda/__launch/configuration.h>
+#  include <cuda/__launch/launch.h>
 #  include <cuda/__memory_pool/device_memory_pool.h>
 #  include <cuda/std/__concepts/concept_macros.h>
 #  include <cuda/std/__cstddef/types.h>
+#  include <cuda/std/__exception/exception_macros.h>
 #  include <cuda/std/__functional/operations.h>
 #  include <cuda/std/__fwd/extents.h>
+#  include <cuda/std/__host_stdlib/stdexcept>
 #  include <cuda/std/__memory/unique_ptr.h>
+#  include <cuda/std/__type_traits/integral_constant.h>
 #  include <cuda/std/__utility/pair.h>
 
 #  include <cuda/experimental/__cuco/capacity.cuh>
-#  include <cuda/experimental/__cuco/detail/bitwise_compare.cuh>
-#  include <cuda/experimental/__cuco/detail/open_addressing/open_addressing_impl.cuh>
+#  include <cuda/experimental/__cuco/detail/open_addressing/functors.cuh>
+#  include <cuda/experimental/__cuco/detail/open_addressing/kernels.cuh>
+#  include <cuda/experimental/__cuco/detail/open_addressing/slot_storage_ref.cuh>
+#  include <cuda/experimental/__cuco/detail/utility/cuda.cuh>
 #  include <cuda/experimental/__cuco/fixed_capacity_map_ref.cuh>
 #  include <cuda/experimental/__cuco/probing_scheme.cuh>
 #  include <cuda/experimental/__cuco/types.cuh>
@@ -103,16 +111,96 @@ public:
                                                                                                   ///< ref type
 
 private:
-  using __impl_type = __open_addressing::
-    __open_addressing_impl<_Key, value_type, _Scope, _KeyEqual, _ProbingScheme, _BucketSize, _MemoryResource>;
-
-  ::cuda::std::unique_ptr<__impl_type> __impl;
-  mapped_type __empty_value_sentinel;
-
-  //! @brief Synchronizes the CUDA stream.
-  _CCCL_HOST_API static void __sync(::cuda::stream_ref __stream)
+  struct __state_type
   {
-    __stream.sync();
+    value_type __empty_slot;
+    key_type __erased_key;
+    key_equal __pred;
+    probing_scheme_type __probing_scheme;
+    _MemoryResource __mr;
+    ::cuda::device_buffer<value_type> __slots;
+
+    _CCCL_HOST_API __state_type(
+      ::cuda::stream_ref __stream,
+      _MemoryResource __resource,
+      size_type __capacity,
+      value_type __empty,
+      key_type __erased,
+      const key_equal& __equal,
+      const probing_scheme_type& __probing)
+        : __empty_slot{__empty}
+        , __erased_key{__erased}
+        , __pred{__equal}
+        , __probing_scheme{__probing}
+        , __mr{__resource}
+        , __slots{__stream, __resource, __capacity, ::cuda::no_init}
+    {}
+
+    // NVCC requires a non-defaulted destructor to honor the host annotation for the slot buffer.
+    _CCCL_HOST_API ~__state_type() {} // NOLINT(modernize-use-equals-default)
+  };
+
+  // Moving the owner transfers its state without moving the user-supplied policies.
+  ::cuda::std::unique_ptr<__state_type> __state;
+
+  template <bool _SupportsErasure>
+  _CCCL_HOST_API fixed_capacity_map(
+    ::cuda::stream_ref __stream,
+    _MemoryResource __mr,
+    size_type __capacity,
+    value_type __empty_slot,
+    key_type __erased_key,
+    ::cuda::std::bool_constant<_SupportsErasure>,
+    const key_equal& __pred,
+    const probing_scheme_type& __probing_scheme)
+      : __state{::cuda::std::make_unique<__state_type>(
+          __stream, __mr, __capacity, __empty_slot, __erased_key, __pred, __probing_scheme)}
+  {
+    if constexpr (_SupportsErasure)
+    {
+      if (empty_key_sentinel() == erased_key_sentinel())
+      {
+        _CCCL_THROW(::std::invalid_argument,
+                    "The empty key sentinel and erased key sentinel cannot be the same value.");
+      }
+    }
+    ref().clear_async(__stream);
+  }
+
+  [[nodiscard]] _CCCL_HOST_API ref_type __make_ref(typename ref_type::storage_span_type __slots) const noexcept
+  {
+    // Without erasure support, the erased-key sentinel is the empty-key sentinel.
+    return ref_type{
+      empty_key{empty_key_sentinel()},
+      empty_value{empty_value_sentinel()},
+      erased_key{erased_key_sentinel()},
+      __state->__pred,
+      __state->__probing_scheme,
+      __slots};
+  }
+
+  _CCCL_HOST_API void __rehash_async(::cuda::stream_ref __stream, size_type __capacity)
+  {
+    const auto __new_capacity = make_valid_capacity<_ProbingScheme, _BucketSize>(__capacity);
+    ::cuda::device_buffer<value_type> __new_slots{__stream, __state->__mr, __new_capacity, ::cuda::no_init};
+    const auto __new_ref = __make_ref(typename ref_type::storage_span_type{__new_slots.data(), __new_slots.size()});
+    __new_ref.clear_async(__stream);
+    __state->__slots.swap(__new_slots);
+
+    if (!__new_slots.empty())
+    {
+      using __storage_ref_type    = __open_addressing::__slot_storage_ref<value_type, _BucketSize>;
+      using __predicate_type      = __open_addressing::__slot_is_filled<true, key_type>;
+      constexpr auto __block_size = detail::__default_block_size;
+      const auto __grid_size      = detail::__grid_size(static_cast<detail::__index_type>(__new_slots.size()));
+      const auto __old_storage    = __storage_ref_type{__new_slots.data(), __new_slots.size()};
+      const auto __is_filled      = __predicate_type{empty_key_sentinel(), erased_key_sentinel()};
+      const auto __config =
+        ::cuda::make_config(::cuda::grid_dims(static_cast<unsigned>(__grid_size)), ::cuda::block_dims<__block_size>());
+      const auto& __kernel = __open_addressing::__rehash<__block_size, __storage_ref_type, ref_type, __predicate_type>;
+      ::cuda::launch(__stream, __config, __kernel, __old_storage, __new_ref, __is_filled);
+    }
+    __new_slots.destroy(__stream);
   }
 
 public:
@@ -133,14 +221,15 @@ public:
     empty_value<_Tp> __empty_value_sentinel,
     const _KeyEqual& __pred                = {},
     const _ProbingScheme& __probing_scheme = {})
-      : __impl{::cuda::std::make_unique<__impl_type>(
+      : fixed_capacity_map{
           __stream,
           __mr,
           _Capacity,
           value_type{key_type(__empty_key_sentinel), mapped_type(__empty_value_sentinel)},
+          key_type(__empty_key_sentinel),
+          ::cuda::std::false_type{},
           __pred,
-          __probing_scheme)}
-      , __empty_value_sentinel{mapped_type(__empty_value_sentinel)}
+          __probing_scheme}
   {}
 
   //! @brief Constructs a map with dynamic capacity and no erasure.
@@ -162,14 +251,15 @@ public:
     empty_value<_Tp> __empty_value_sentinel,
     const _KeyEqual& __pred                = {},
     const _ProbingScheme& __probing_scheme = {})
-      : __impl{::cuda::std::make_unique<__impl_type>(
+      : fixed_capacity_map{
           __stream,
           __mr,
-          __capacity,
+          make_valid_capacity<_ProbingScheme, _BucketSize>(__capacity),
           value_type{key_type(__empty_key_sentinel), mapped_type(__empty_value_sentinel)},
+          key_type(__empty_key_sentinel),
+          ::cuda::std::false_type{},
           __pred,
-          __probing_scheme)}
-      , __empty_value_sentinel{mapped_type(__empty_value_sentinel)}
+          __probing_scheme}
   {}
 
   //! @brief Constructs a map sized by a target load factor (dynamic capacity only).
@@ -193,15 +283,15 @@ public:
     empty_value<_Tp> __empty_value_sentinel,
     const _KeyEqual& __pred                = {},
     const _ProbingScheme& __probing_scheme = {})
-      : __impl{::cuda::std::make_unique<__impl_type>(
+      : fixed_capacity_map{
           __stream,
           __mr,
-          __n,
-          __desired_load_factor,
+          make_valid_capacity<_ProbingScheme, _BucketSize>(__n, __desired_load_factor),
           value_type{key_type(__empty_key_sentinel), mapped_type(__empty_value_sentinel)},
+          key_type(__empty_key_sentinel),
+          ::cuda::std::false_type{},
           __pred,
-          __probing_scheme)}
-      , __empty_value_sentinel{mapped_type(__empty_value_sentinel)}
+          __probing_scheme}
   {}
 
   //! @brief Constructs a map with static capacity and erasure support.
@@ -223,15 +313,15 @@ public:
     erased_key<_Key> __erased_key_sentinel,
     const _KeyEqual& __pred                = {},
     const _ProbingScheme& __probing_scheme = {})
-      : __impl{::cuda::std::make_unique<__impl_type>(
+      : fixed_capacity_map{
           __stream,
           __mr,
           _Capacity,
           value_type{key_type(__empty_key_sentinel), mapped_type(__empty_value_sentinel)},
           key_type(__erased_key_sentinel),
+          ::cuda::std::true_type{},
           __pred,
-          __probing_scheme)}
-      , __empty_value_sentinel{mapped_type(__empty_value_sentinel)}
+          __probing_scheme}
   {}
 
   //! @brief Constructs a map with dynamic capacity and erasure support.
@@ -255,15 +345,15 @@ public:
     erased_key<_Key> __erased_key_sentinel,
     const _KeyEqual& __pred                = {},
     const _ProbingScheme& __probing_scheme = {})
-      : __impl{::cuda::std::make_unique<__impl_type>(
+      : fixed_capacity_map{
           __stream,
           __mr,
-          __capacity,
+          make_valid_capacity<_ProbingScheme, _BucketSize>(__capacity),
           value_type{key_type(__empty_key_sentinel), mapped_type(__empty_value_sentinel)},
           key_type(__erased_key_sentinel),
+          ::cuda::std::true_type{},
           __pred,
-          __probing_scheme)}
-      , __empty_value_sentinel{mapped_type(__empty_value_sentinel)}
+          __probing_scheme}
   {}
 
   // ===== Clear =====
@@ -304,7 +394,7 @@ public:
   template <class _InputIt>
   _CCCL_HOST_API size_type insert(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last)
   {
-    return ref().insert(__stream, __first, __last, __impl->memory_resource());
+    return ref().insert(__stream, __first, __last, __state->__mr);
   }
 
   //! @brief Asynchronously inserts all keys in the range `[__first, __last)`.
@@ -406,7 +496,7 @@ public:
   _CCCL_HOST_API size_type
   insert_if(::cuda::stream_ref __stream, _InputIt __first, _InputIt __last, _StencilIt __stencil, _Predicate __pred)
   {
-    return ref().insert_if(__stream, __first, __last, __stencil, __pred, __impl->memory_resource());
+    return ref().insert_if(__stream, __first, __last, __stencil, __pred, __state->__mr);
   }
 
   //! @brief Asynchronously inserts keys in `[__first, __last)` whose stencil satisfies `__pred`.
@@ -727,7 +817,7 @@ public:
   [[nodiscard]] _CCCL_HOST_API ::cuda::std::pair<_KeyOutputIt, _ValueOutputIt>
   retrieve_all(::cuda::stream_ref __stream, _KeyOutputIt __keys_out, _ValueOutputIt __values_out) const
   {
-    return ref().retrieve_all(__stream, __keys_out, __values_out, __impl->memory_resource());
+    return ref().retrieve_all(__stream, __keys_out, __values_out, __state->__mr);
   }
 
   // ===== Rehash =====
@@ -743,7 +833,7 @@ public:
   _CCCL_HOST_API void rehash(::cuda::stream_ref __stream)
   {
     rehash_async(__stream);
-    __sync(__stream);
+    __stream.sync();
   }
 
   //! @brief Changes the map's capacity and rebuilds it in new storage.
@@ -763,7 +853,7 @@ public:
   _CCCL_HOST_API void rehash(::cuda::stream_ref __stream, size_type __capacity)
   {
     rehash_async(__stream, __capacity);
-    __sync(__stream);
+    __stream.sync();
   }
 
   //! @brief Asynchronously rebuilds the map in new storage without changing its capacity.
@@ -773,7 +863,7 @@ public:
   //! @param __stream CUDA stream used for this operation
   _CCCL_HOST_API void rehash_async(::cuda::stream_ref __stream)
   {
-    __impl->rehash_async(__stream, *this);
+    __rehash_async(__stream, capacity());
   }
 
   //! @brief Asynchronously changes the map's capacity and rebuilds it in new storage.
@@ -790,7 +880,7 @@ public:
   _CCCL_REQUIRES((_C == _Capacity) _CCCL_AND(_C == ::cuda::std::dynamic_extent))
   _CCCL_HOST_API void rehash_async(::cuda::stream_ref __stream, size_type __capacity)
   {
-    __impl->rehash_async(__stream, __capacity, *this);
+    __rehash_async(__stream, __capacity);
   }
 
   // ===== Accessors =====
@@ -804,7 +894,7 @@ public:
   //! @return The number of elements in the map
   [[nodiscard]] _CCCL_HOST_API size_type size(::cuda::stream_ref __stream) const
   {
-    return ref().size(__stream, __impl->memory_resource());
+    return ref().size(__stream, __state->__mr);
   }
 
   //! @brief Returns the total number of slots the map can hold (the prime/stride-adjusted capacity).
@@ -812,7 +902,7 @@ public:
   //! @return Total slot count
   [[nodiscard]] constexpr size_type capacity() const noexcept
   {
-    return __impl->capacity();
+    return __state->__slots.size();
   }
 
   //! @brief Gets a device pointer to the underlying slot storage.
@@ -820,7 +910,7 @@ public:
   //! @return Pointer to the underlying slot storage
   [[nodiscard]] _CCCL_HOST_API value_type* data() const
   {
-    return __impl->data();
+    return __state->__slots.data();
   }
 
   //! @brief Gets the sentinel value used to represent an empty key slot.
@@ -828,7 +918,7 @@ public:
   //! @return The sentinel value used to represent an empty key slot
   [[nodiscard]] constexpr key_type empty_key_sentinel() const noexcept
   {
-    return __impl->empty_key_sentinel();
+    return __state->__empty_slot.first;
   }
 
   //! @brief Gets the sentinel value used to represent an empty payload slot.
@@ -836,7 +926,7 @@ public:
   //! @return The sentinel value used to represent an empty payload slot
   [[nodiscard]] constexpr mapped_type empty_value_sentinel() const noexcept
   {
-    return __empty_value_sentinel;
+    return __state->__empty_slot.second;
   }
 
   //! @brief Gets the sentinel value used to represent an erased key slot.
@@ -844,7 +934,7 @@ public:
   //! @return The sentinel value used to represent an erased key slot
   [[nodiscard]] constexpr key_type erased_key_sentinel() const noexcept
   {
-    return __impl->erased_key_sentinel();
+    return __state->__erased_key;
   }
 
   //! @brief Gets the function used to compare keys for equality.
@@ -852,7 +942,7 @@ public:
   //! @return The function used to compare keys for equality
   [[nodiscard]] constexpr key_equal key_eq() const noexcept
   {
-    return __impl->key_eq();
+    return __state->__pred;
   }
 
   //! @brief Gets the function(s) used to hash keys.
@@ -860,7 +950,7 @@ public:
   //! @return The function(s) used to hash keys
   [[nodiscard]] constexpr hasher hash_function() const noexcept
   {
-    return __impl->hash_function();
+    return __state->__probing_scheme.hash_function();
   }
 
   //! @brief Gets a device-usable non-owning reference to this map.
@@ -872,19 +962,7 @@ public:
   //! @return A `ref_type` referring to this map
   [[nodiscard]] auto ref() const noexcept -> ref_type
   {
-    auto __slots = typename ref_type::storage_span_type{__impl->storage_ref().data(), __impl->capacity()};
-    return detail::__bitwise_compare(empty_key_sentinel(), erased_key_sentinel())
-           ? ref_type{empty_key{empty_key_sentinel()},
-                      empty_value{empty_value_sentinel()},
-                      __impl->key_eq(),
-                      __impl->probing_scheme(),
-                      __slots}
-           : ref_type{empty_key{empty_key_sentinel()},
-                      empty_value{empty_value_sentinel()},
-                      erased_key{erased_key_sentinel()},
-                      __impl->key_eq(),
-                      __impl->probing_scheme(),
-                      __slots};
+    return __make_ref(typename ref_type::storage_span_type{data(), capacity()});
   }
 };
 } // namespace cuda::experimental::cuco
